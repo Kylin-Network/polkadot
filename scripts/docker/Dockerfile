@@ -20,16 +20,19 @@ RUN git checkout ${DOT_BRANCH}
 RUN cargo build --${PROFILE}
 RUN cp target/${PROFILE}/polkadot /polkadot
 
+ARG SUBKEY_VERSION=2.0.1
+
 # build subkey
-RUN cargo install --force subkey --git https://github.com/paritytech/substrate --branch polkadot-v0.9.3  --locked
-RUN cp /subkey /subkey;echo 'subkey copied';
+RUN cargo install --force subkey --git https://github.com/paritytech/substrate --version ${SUBKEY_VERSION} --locked
+RUN cp /usr/local/cargo/bin/subkey /subkey
 
 # build sample data fetcher
-FROM paritytech/ci-linux:production as data_fetcher_builder
+#FROM paritytech/ci-linux:production as data_fetcher_builder
 ARG DATA_FETECHER_REPO="https://github.com/Kylin-Network/sample-data-fetcher.git"
 ARG DATA_FETECHER_BRANCH="master"
 ARG PROFILE="release"
 
+WORKDIR /builds/
 RUN git clone --recursive ${DATA_FETECHER_REPO}
 WORKDIR /builds/sample-data-fetcher
 RUN cargo build --${PROFILE}
@@ -37,12 +40,13 @@ RUN cp target/${PROFILE}/data_fetcher /data_fetcher
 
 #
 # build Polkadot JS apps
-FROM paritytech/ci-linux:production as frontend_builder
+#FROM paritytech/ci-linux:production as frontend_builder
 #
 LABEL maintainer="kylin-dev"
 ARG FRONT_REPO="https://github.com/Kylin-Network/apps.git"
 ARG FRONT_BRANCH="master"
 
+WORKDIR /builds/
 RUN git clone --recursive ${FRONT_REPO}
 WORKDIR /builds/apps
 
@@ -60,20 +64,17 @@ RUN npm install npm@latest -g && \
     n latest
 RUN YARN_CHECKSUM_BEHAVIOR=update yarn && yarn build:www
 
-FROM ubuntu
 ARG PROFILE="release"
 ENV DEBIAN_FRONTEND noninteractive
 RUN apt-get update && apt-get install curl ca-certificates npm nodejs -y
 RUN npm install -g serve
-COPY --from=builder /polkadot /
-COPY --from=builder /subkey /
-
-# COPY --from=data_fetcher_builder /builds/sample-data-fetcher/target/${PROFILE}/data_fetcher /data_fetcher
-COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/es_index.json /es_index.json
-COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/kibana.ndjson /kibana.ndjson
-COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/init_es_index.sh /init_es_index.sh
-COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/init_kibana_dashboard.sh /init_kibana_dashboard.sh
-
-COPY --from=frontend_builder /builds/apps/packages/apps /apps
+#COPY --from=builder /polkadot /
+#COPY --from=builder /subkey /
 #
-EXPOSE 30330-30345 9933-9960 8080 3001
+#COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/es_index.json /es_index.json
+#COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/kibana.ndjson /kibana.ndjson
+#COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/init_es_index.sh /init_es_index.sh
+#COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/init_kibana_dashboard.sh /init_kibana_dashboard.sh
+
+#COPY --from=frontend_builder /builds/apps/packages/apps /apps
+
