@@ -82,7 +82,7 @@ use sp_api::{ApiExt, ProvideRuntimeApi};
 
 use polkadot_subsystem::messages::{
 	CandidateValidationMessage, CandidateBackingMessage,
-	CandidateSelectionMessage, ChainApiMessage, StatementDistributionMessage,
+	ChainApiMessage, StatementDistributionMessage,
 	AvailabilityDistributionMessage, BitfieldSigningMessage, BitfieldDistributionMessage,
 	ProvisionerMessage, RuntimeApiMessage,
 	AvailabilityStoreMessage, NetworkBridgeMessage, AllMessages, CollationGenerationMessage,
@@ -148,7 +148,7 @@ impl<Client> HeadSupportsParachains for Arc<Client> where
 /// subsystems are implemented and the rest can be mocked with the [`DummySubsystem`].
 #[derive(Debug, Clone, AllSubsystemsGen)]
 pub struct AllSubsystems<
-	CV = (), CB = (), CS = (), SD = (), AD = (), AR = (), BS = (), BD = (), P = (),
+	CV = (), CB = (), SD = (), AD = (), AR = (), BS = (), BD = (), P = (),
 	RA = (), AS = (), NB = (), CA = (), CG = (), CP = (), ApD = (), ApV = (),
 	GS = (),
 > {
@@ -156,8 +156,6 @@ pub struct AllSubsystems<
 	pub candidate_validation: CV,
 	/// A candidate backing subsystem.
 	pub candidate_backing: CB,
-	/// A candidate selection subsystem.
-	pub candidate_selection: CS,
 	/// A statement distribution subsystem.
 	pub statement_distribution: SD,
 	/// An availability distribution subsystem.
@@ -190,8 +188,8 @@ pub struct AllSubsystems<
 	pub gossip_support: GS,
 }
 
-impl<CV, CB, CS, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>
-	AllSubsystems<CV, CB, CS, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>
+impl<CV, CB, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>
+	AllSubsystems<CV, CB, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>
 {
 	/// Create a new instance of [`AllSubsystems`].
 	///
@@ -223,12 +221,10 @@ impl<CV, CB, CS, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>
 		DummySubsystem,
 		DummySubsystem,
 		DummySubsystem,
-		DummySubsystem,
 	> {
 		AllSubsystems {
 			candidate_validation: DummySubsystem,
 			candidate_backing: DummySubsystem,
-			candidate_selection: DummySubsystem,
 			statement_distribution: DummySubsystem,
 			availability_distribution: DummySubsystem,
 			availability_recovery: DummySubsystem,
@@ -247,11 +243,10 @@ impl<CV, CB, CS, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>
 		}
 	}
 
-	fn as_ref(&self) -> AllSubsystems<&'_ CV, &'_ CB, &'_ CS, &'_ SD, &'_ AD, &'_ AR, &'_ BS, &'_ BD, &'_ P, &'_ RA, &'_ AS, &'_ NB, &'_ CA, &'_ CG, &'_ CP, &'_ ApD, &'_ ApV, &'_ GS> {
+	fn as_ref(&self) -> AllSubsystems<&'_ CV, &'_ CB, &'_ SD, &'_ AD, &'_ AR, &'_ BS, &'_ BD, &'_ P, &'_ RA, &'_ AS, &'_ NB, &'_ CA, &'_ CG, &'_ CP, &'_ ApD, &'_ ApV, &'_ GS> {
 		AllSubsystems {
 			candidate_validation: &self.candidate_validation,
 			candidate_backing: &self.candidate_backing,
-			candidate_selection: &self.candidate_selection,
 			statement_distribution: &self.statement_distribution,
 			availability_distribution: &self.availability_distribution,
 			availability_recovery: &self.availability_recovery,
@@ -274,7 +269,6 @@ impl<CV, CB, CS, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>
 		-> AllSubsystems<
 			<M as MapSubsystem<CV>>::Output,
 			<M as MapSubsystem<CB>>::Output,
-			<M as MapSubsystem<CS>>::Output,
 			<M as MapSubsystem<SD>>::Output,
 			<M as MapSubsystem<AD>>::Output,
 			<M as MapSubsystem<AR>>::Output,
@@ -294,7 +288,6 @@ impl<CV, CB, CS, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>
 	where
 		M: MapSubsystem<CV>,
 		M: MapSubsystem<CB>,
-		M: MapSubsystem<CS>,
 		M: MapSubsystem<SD>,
 		M: MapSubsystem<AD>,
 		M: MapSubsystem<AR>,
@@ -314,7 +307,6 @@ impl<CV, CB, CS, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>
 		AllSubsystems {
 			candidate_validation: m.map_subsystem(self.candidate_validation),
 			candidate_backing: m.map_subsystem(self.candidate_backing),
-			candidate_selection: m.map_subsystem(self.candidate_selection),
 			statement_distribution: m.map_subsystem(self.statement_distribution),
 			availability_distribution: m.map_subsystem(self.availability_distribution),
 			availability_recovery: m.map_subsystem(self.availability_recovery),
@@ -338,7 +330,7 @@ type AllSubsystemsSame<T> = AllSubsystems<
 	T, T, T, T, T,
 	T, T, T, T, T,
 	T, T, T, T, T,
-	T, T, T,
+	T, T,
 >;
 
 /// A type of messages that are sent from [`Subsystem`] to [`Overseer`].
@@ -429,19 +421,16 @@ pub struct OverseerHandler {
 
 impl OverseerHandler {
 	/// Inform the `Overseer` that that some block was imported.
-	#[tracing::instrument(level = "trace", skip(self), fields(subsystem = LOG_TARGET))]
 	pub async fn block_imported(&mut self, block: BlockInfo) {
 		self.send_and_log_error(Event::BlockImported(block)).await
 	}
 
 	/// Send some message to one of the `Subsystem`s.
-	#[tracing::instrument(level = "trace", skip(self, msg), fields(subsystem = LOG_TARGET))]
 	pub async fn send_msg(&mut self, msg: impl Into<AllMessages>) {
 		self.send_and_log_error(Event::MsgToSubsystem(msg.into())).await
 	}
 
 	/// Inform the `Overseer` that some block was finalized.
-	#[tracing::instrument(level = "trace", skip(self), fields(subsystem = LOG_TARGET))]
 	pub async fn block_finalized(&mut self, block: BlockInfo) {
 		self.send_and_log_error(Event::BlockFinalized(block)).await
 	}
@@ -452,7 +441,6 @@ impl OverseerHandler {
 	/// Note that due the fact the overseer doesn't store the whole active-leaves set, only deltas,
 	/// the response channel may never return if the hash was deactivated before this call.
 	/// In this case, it's the caller's responsibility to ensure a timeout is set.
-	#[tracing::instrument(level = "trace", skip(self, response_channel), fields(subsystem = LOG_TARGET))]
 	pub async fn wait_for_activation(&mut self, hash: Hash, response_channel: oneshot::Sender<SubsystemResult<()>>) {
 		self.send_and_log_error(Event::ExternalRequest(ExternalRequest::WaitForActivation {
 			hash,
@@ -461,7 +449,6 @@ impl OverseerHandler {
 	}
 
 	/// Tell `Overseer` to shutdown.
-	#[tracing::instrument(level = "trace", skip(self), fields(subsystem = LOG_TARGET))]
 	pub async fn stop(&mut self) {
 		self.send_and_log_error(Event::Stop).await
 	}
@@ -546,7 +533,6 @@ fn make_packet<T>(signals_received: usize, message: T) -> MessagePacket<T> {
 struct ChannelsOut {
 	candidate_validation: metered::MeteredSender<MessagePacket<CandidateValidationMessage>>,
 	candidate_backing: metered::MeteredSender<MessagePacket<CandidateBackingMessage>>,
-	candidate_selection: metered::MeteredSender<MessagePacket<CandidateSelectionMessage>>,
 	statement_distribution: metered::MeteredSender<MessagePacket<StatementDistributionMessage>>,
 	availability_distribution: metered::MeteredSender<MessagePacket<AvailabilityDistributionMessage>>,
 	availability_recovery: metered::MeteredSender<MessagePacket<AvailabilityRecoveryMessage>>,
@@ -565,7 +551,6 @@ struct ChannelsOut {
 
 	candidate_validation_unbounded: metered::UnboundedMeteredSender<MessagePacket<CandidateValidationMessage>>,
 	candidate_backing_unbounded: metered::UnboundedMeteredSender<MessagePacket<CandidateBackingMessage>>,
-	candidate_selection_unbounded: metered::UnboundedMeteredSender<MessagePacket<CandidateSelectionMessage>>,
 	statement_distribution_unbounded: metered::UnboundedMeteredSender<MessagePacket<StatementDistributionMessage>>,
 	availability_distribution_unbounded: metered::UnboundedMeteredSender<MessagePacket<AvailabilityDistributionMessage>>,
 	availability_recovery_unbounded: metered::UnboundedMeteredSender<MessagePacket<AvailabilityRecoveryMessage>>,
@@ -595,9 +580,6 @@ impl ChannelsOut {
 			},
 			AllMessages::CandidateBacking(msg) => {
 				self.candidate_backing.send(make_packet(signals_received, msg)).await
-			},
-			AllMessages::CandidateSelection(msg) => {
-				self.candidate_selection.send(make_packet(signals_received, msg)).await
 			},
 			AllMessages::StatementDistribution(msg) => {
 				self.statement_distribution.send(make_packet(signals_received, msg)).await
@@ -668,11 +650,6 @@ impl ChannelsOut {
 			},
 			AllMessages::CandidateBacking(msg) => {
 				self.candidate_backing_unbounded
-					.unbounded_send(make_packet(signals_received, msg))
-					.map_err(|e| e.into_send_error())
-			},
-			AllMessages::CandidateSelection(msg) => {
-				self.candidate_selection_unbounded
 					.unbounded_send(make_packet(signals_received, msg))
 					.map_err(|e| e.into_send_error())
 			},
@@ -1058,7 +1035,6 @@ pub struct Overseer<S, SupportsParachains> {
 	subsystems: AllSubsystems<
 		OverseenSubsystem<CandidateValidationMessage>,
 		OverseenSubsystem<CandidateBackingMessage>,
-		OverseenSubsystem<CandidateSelectionMessage>,
 		OverseenSubsystem<StatementDistributionMessage>,
 		OverseenSubsystem<AvailabilityDistributionMessage>,
 		OverseenSubsystem<AvailabilityRecoveryMessage>,
@@ -1379,9 +1355,9 @@ where
 	/// #
 	/// # }); }
 	/// ```
-	pub fn new<CV, CB, CS, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>(
+	pub fn new<CV, CB, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>(
 		leaves: impl IntoIterator<Item = BlockInfo>,
-		all_subsystems: AllSubsystems<CV, CB, CS, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>,
+		all_subsystems: AllSubsystems<CV, CB, SD, AD, AR, BS, BD, P, RA, AS, NB, CA, CG, CP, ApD, ApV, GS>,
 		prometheus_registry: Option<&prometheus::Registry>,
 		supports_parachains: SupportsParachains,
 		mut s: S,
@@ -1389,7 +1365,6 @@ where
 	where
 		CV: Subsystem<OverseerSubsystemContext<CandidateValidationMessage>> + Send,
 		CB: Subsystem<OverseerSubsystemContext<CandidateBackingMessage>> + Send,
-		CS: Subsystem<OverseerSubsystemContext<CandidateSelectionMessage>> + Send,
 		SD: Subsystem<OverseerSubsystemContext<StatementDistributionMessage>> + Send,
 		AD: Subsystem<OverseerSubsystemContext<AvailabilityDistributionMessage>> + Send,
 		AR: Subsystem<OverseerSubsystemContext<AvailabilityRecoveryMessage>> + Send,
@@ -1421,8 +1396,6 @@ where
 		let (candidate_validation_bounded_tx, candidate_validation_bounded_rx)
 			= metered::channel(CHANNEL_CAPACITY);
 		let (candidate_backing_bounded_tx, candidate_backing_bounded_rx)
-			= metered::channel(CHANNEL_CAPACITY);
-		let (candidate_selection_bounded_tx, candidate_selection_bounded_rx)
 			= metered::channel(CHANNEL_CAPACITY);
 		let (statement_distribution_bounded_tx, statement_distribution_bounded_rx)
 			= metered::channel(CHANNEL_CAPACITY);
@@ -1459,8 +1432,6 @@ where
 			= metered::unbounded();
 		let (candidate_backing_unbounded_tx, candidate_backing_unbounded_rx)
 			= metered::unbounded();
-		let (candidate_selection_unbounded_tx, candidate_selection_unbounded_rx)
-			= metered::unbounded();
 		let (statement_distribution_unbounded_tx, statement_distribution_unbounded_rx)
 			= metered::unbounded();
 		let (availability_distribution_unbounded_tx, availability_distribution_unbounded_rx)
@@ -1495,7 +1466,6 @@ where
 		let channels_out = ChannelsOut {
 			candidate_validation: candidate_validation_bounded_tx.clone(),
 			candidate_backing: candidate_backing_bounded_tx.clone(),
-			candidate_selection: candidate_selection_bounded_tx.clone(),
 			statement_distribution: statement_distribution_bounded_tx.clone(),
 			availability_distribution: availability_distribution_bounded_tx.clone(),
 			availability_recovery: availability_recovery_bounded_tx.clone(),
@@ -1514,7 +1484,6 @@ where
 
 			candidate_validation_unbounded: candidate_validation_unbounded_tx.clone(),
 			candidate_backing_unbounded: candidate_backing_unbounded_tx.clone(),
-			candidate_selection_unbounded: candidate_selection_unbounded_tx.clone(),
 			statement_distribution_unbounded: statement_distribution_unbounded_tx.clone(),
 			availability_distribution_unbounded: availability_distribution_unbounded_tx.clone(),
 			availability_recovery_unbounded: availability_recovery_unbounded_tx.clone(),
@@ -1553,19 +1522,6 @@ where
 			channels_out.clone(),
 			to_overseer_tx.clone(),
 			all_subsystems.candidate_backing,
-			&metrics,
-			&mut running_subsystems,
-			TaskKind::Regular,
-		)?;
-
-		let candidate_selection_subsystem = spawn(
-			&mut s,
-			candidate_selection_bounded_tx,
-			stream::select(candidate_selection_bounded_rx, candidate_selection_unbounded_rx),
-			candidate_selection_unbounded_tx.meter().clone(),
-			channels_out.clone(),
-			to_overseer_tx.clone(),
-			all_subsystems.candidate_selection,
 			&metrics,
 			&mut running_subsystems,
 			TaskKind::Regular,
@@ -1777,7 +1733,6 @@ where
 		let subsystems = AllSubsystems {
 			candidate_validation: candidate_validation_subsystem,
 			candidate_backing: candidate_backing_subsystem,
-			candidate_selection: candidate_selection_subsystem,
 			statement_distribution: statement_distribution_subsystem,
 			availability_distribution: availability_distribution_subsystem,
 			availability_recovery: availability_recovery_subsystem,
@@ -1853,7 +1808,6 @@ where
 	async fn stop(mut self) {
 		let _ = self.subsystems.candidate_validation.send_signal(OverseerSignal::Conclude).await;
 		let _ = self.subsystems.candidate_backing.send_signal(OverseerSignal::Conclude).await;
-		let _ = self.subsystems.candidate_selection.send_signal(OverseerSignal::Conclude).await;
 		let _ = self.subsystems.statement_distribution.send_signal(OverseerSignal::Conclude).await;
 		let _ = self.subsystems.availability_distribution.send_signal(OverseerSignal::Conclude).await;
 		let _ = self.subsystems.availability_recovery.send_signal(OverseerSignal::Conclude).await;
@@ -1886,7 +1840,6 @@ where
 	}
 
 	/// Run the `Overseer`.
-	#[tracing::instrument(skip(self), fields(subsystem = LOG_TARGET))]
 	pub async fn run(mut self) -> SubsystemResult<()> {
 		let mut update = ActiveLeavesUpdate::default();
 
@@ -1968,7 +1921,6 @@ where
 		}
 	}
 
-	#[tracing::instrument(level = "trace", skip(self), fields(subsystem = LOG_TARGET))]
 	async fn block_imported(&mut self, block: BlockInfo) -> SubsystemResult<()> {
 		match self.active_leaves.entry(block.hash) {
 			hash_map::Entry::Vacant(entry) => entry.insert(block.number),
@@ -2003,7 +1955,6 @@ where
 		}
 	}
 
-	#[tracing::instrument(level = "trace", skip(self), fields(subsystem = LOG_TARGET))]
 	async fn block_finalized(&mut self, block: BlockInfo) -> SubsystemResult<()> {
 		let mut update = ActiveLeavesUpdate::default();
 
@@ -2032,11 +1983,9 @@ where
 		Ok(())
 	}
 
-	#[tracing::instrument(level = "trace", skip(self), fields(subsystem = LOG_TARGET))]
 	async fn broadcast_signal(&mut self, signal: OverseerSignal) -> SubsystemResult<()> {
 		self.subsystems.candidate_validation.send_signal(signal.clone()).await?;
 		self.subsystems.candidate_backing.send_signal(signal.clone()).await?;
-		self.subsystems.candidate_selection.send_signal(signal.clone()).await?;
 		self.subsystems.statement_distribution.send_signal(signal.clone()).await?;
 		self.subsystems.availability_distribution.send_signal(signal.clone()).await?;
 		self.subsystems.availability_recovery.send_signal(signal.clone()).await?;
@@ -2056,7 +2005,6 @@ where
 		Ok(())
 	}
 
-	#[tracing::instrument(level = "trace", skip(self), fields(subsystem = LOG_TARGET))]
 	async fn route_message(&mut self, msg: AllMessages) -> SubsystemResult<()> {
 		self.metrics.on_message_relayed();
 		match msg {
@@ -2065,9 +2013,6 @@ where
 			},
 			AllMessages::CandidateBacking(msg) => {
 				self.subsystems.candidate_backing.send_message(msg).await?;
-			},
-			AllMessages::CandidateSelection(msg) => {
-				self.subsystems.candidate_selection.send_message(msg).await?;
 			},
 			AllMessages::StatementDistribution(msg) => {
 				self.subsystems.statement_distribution.send_message(msg).await?;
@@ -2121,7 +2066,6 @@ where
 
 	/// Handles a header activation. If the header's state doesn't support the parachains API,
 	/// this returns `None`.
-	#[tracing::instrument(level = "trace", skip(self), fields(subsystem = LOG_TARGET))]
 	fn on_head_activated(&mut self, hash: &Hash, parent_hash: Option<Hash>)
 		-> Option<(Arc<jaeger::Span>, LeafStatus)>
 	{
@@ -2155,14 +2099,12 @@ where
 		Some((span, status))
 	}
 
-	#[tracing::instrument(level = "trace", skip(self), fields(subsystem = LOG_TARGET))]
 	fn on_head_deactivated(&mut self, hash: &Hash) {
 		self.metrics.on_head_deactivated();
 		self.activation_external_listeners.remove(hash);
 		self.span_per_active_leaf.remove(hash);
 	}
 
-	#[tracing::instrument(level = "trace", skip(self), fields(subsystem = LOG_TARGET))]
 	fn clean_up_external_listeners(&mut self) {
 		self.activation_external_listeners.retain(|_, v| {
 			// remove dead listeners
@@ -2171,7 +2113,6 @@ where
 		})
 	}
 
-	#[tracing::instrument(level = "trace", skip(self, request), fields(subsystem = LOG_TARGET))]
 	fn handle_external_request(&mut self, request: ExternalRequest) {
 		match request {
 			ExternalRequest::WaitForActivation { hash, response_channel } => {
@@ -3092,10 +3033,6 @@ mod tests {
 		CandidateBackingMessage::GetBackedCandidates(Default::default(), Vec::new(), sender)
 	}
 
-	fn test_candidate_selection_msg() -> CandidateSelectionMessage {
-		CandidateSelectionMessage::default()
-	}
-
 	fn test_chain_api_msg() -> ChainApiMessage {
 		let (sender, _) = oneshot::channel();
 		ChainApiMessage::FinalizedBlockNumber(sender)
@@ -3177,7 +3114,7 @@ mod tests {
 	// Checks that `stop`, `broadcast_signal` and `broadcast_message` are implemented correctly.
 	#[test]
 	fn overseer_all_subsystems_receive_signals_and_messages() {
-		const NUM_SUBSYSTEMS: usize = 18;
+		const NUM_SUBSYSTEMS: usize = 17;
 		// -3 for BitfieldSigning, GossipSupport and AvailabilityDistribution
 		const NUM_SUBSYSTEMS_MESSAGED: usize = NUM_SUBSYSTEMS - 3;
 
@@ -3196,7 +3133,6 @@ mod tests {
 			let all_subsystems = AllSubsystems {
 				candidate_validation: subsystem.clone(),
 				candidate_backing: subsystem.clone(),
-				candidate_selection: subsystem.clone(),
 				collation_generation: subsystem.clone(),
 				collator_protocol: subsystem.clone(),
 				statement_distribution: subsystem.clone(),
@@ -3235,7 +3171,6 @@ mod tests {
 			// except for BitfieldSigning and GossipSupport as the messages are not instantiable
 			handler.send_msg(AllMessages::CandidateValidation(test_candidate_validation_msg())).await;
 			handler.send_msg(AllMessages::CandidateBacking(test_candidate_backing_msg())).await;
-			handler.send_msg(AllMessages::CandidateSelection(test_candidate_selection_msg())).await;
 			handler.send_msg(AllMessages::CollationGeneration(test_collator_generation_msg())).await;
 			handler.send_msg(AllMessages::CollatorProtocol(test_collator_protocol_msg())).await;
 			handler.send_msg(AllMessages::StatementDistribution(test_statement_distribution_msg())).await;
@@ -3285,7 +3220,6 @@ mod tests {
 	fn context_holds_onto_message_until_enough_signals_received() {
 		let (candidate_validation_bounded_tx, _) = metered::channel(CHANNEL_CAPACITY);
 		let (candidate_backing_bounded_tx, _) = metered::channel(CHANNEL_CAPACITY);
-		let (candidate_selection_bounded_tx, _) = metered::channel(CHANNEL_CAPACITY);
 		let (statement_distribution_bounded_tx, _) = metered::channel(CHANNEL_CAPACITY);
 		let (availability_distribution_bounded_tx, _) = metered::channel(CHANNEL_CAPACITY);
 		let (availability_recovery_bounded_tx, _) = metered::channel(CHANNEL_CAPACITY);
@@ -3304,7 +3238,6 @@ mod tests {
 
 		let (candidate_validation_unbounded_tx, _) = metered::unbounded();
 		let (candidate_backing_unbounded_tx, _) = metered::unbounded();
-		let (candidate_selection_unbounded_tx, _) = metered::unbounded();
 		let (statement_distribution_unbounded_tx, _) = metered::unbounded();
 		let (availability_distribution_unbounded_tx, _) = metered::unbounded();
 		let (availability_recovery_unbounded_tx, _) = metered::unbounded();
@@ -3324,7 +3257,6 @@ mod tests {
 		let channels_out = ChannelsOut {
 			candidate_validation: candidate_validation_bounded_tx.clone(),
 			candidate_backing: candidate_backing_bounded_tx.clone(),
-			candidate_selection: candidate_selection_bounded_tx.clone(),
 			statement_distribution: statement_distribution_bounded_tx.clone(),
 			availability_distribution: availability_distribution_bounded_tx.clone(),
 			availability_recovery: availability_recovery_bounded_tx.clone(),
@@ -3343,7 +3275,6 @@ mod tests {
 
 			candidate_validation_unbounded: candidate_validation_unbounded_tx.clone(),
 			candidate_backing_unbounded: candidate_backing_unbounded_tx.clone(),
-			candidate_selection_unbounded: candidate_selection_unbounded_tx.clone(),
 			statement_distribution_unbounded: statement_distribution_unbounded_tx.clone(),
 			availability_distribution_unbounded: availability_distribution_unbounded_tx.clone(),
 			availability_recovery_unbounded: availability_recovery_unbounded_tx.clone(),
