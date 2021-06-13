@@ -1,47 +1,71 @@
-FROM debian:buster-slim
+# build polkadot-node
+FROM paritytech/ci-linux:production as builder
 
-# metadata
-ARG VCS_REF
-ARG BUILD_DATE
-ARG IMAGE_NAME
+LABEL maintainer="kylin-dev"
+ARG RUST_VERSION=1.51.0
+ARG PROFILE=release
+ARG DOT_GIT_REPO="https://github.com/kylin-Network/polkadot.git"
+ARG DOT_BRANCH="release-v0.9.4"
 
-LABEL io.parity.image.authors="devops-team@parity.io" \
-	io.parity.image.vendor="Parity Technologies" \
-	io.parity.image.title="${IMAGE_NAME}" \
-	io.parity.image.description="polkadot: a platform for web3" \
-	io.parity.image.source="https://github.com/paritytech/polkadot/blob/${VCS_REF}/scripts/docker/Dockerfile" \
-	io.parity.image.revision="${VCS_REF}" \
-	io.parity.image.created="${BUILD_DATE}" \
-	io.parity.image.documentation="https://github.com/paritytech/polkadot/"
+RUN rm -rf /usr/local/rustup/toolchains/
+RUN rustup default stable
+RUN rustup update nightly
+RUN rustup target add wasm32-unknown-unknown --toolchain nightly
 
-# show backtraces
-ENV RUST_BACKTRACE 1
+#Build Polkadot
+WORKDIR /builds/
+RUN git clone --recursive ${DOT_GIT_REPO}
+WORKDIR /builds/polkadot
+RUN git checkout ${DOT_BRANCH}
+RUN cargo build --${PROFILE}
+RUN cp target/${PROFILE}/polkadot /polkadot
 
-# install tools and dependencies
-RUN apt-get update && \
-	DEBIAN_FRONTEND=noninteractive apt-get install -y \
-		libssl1.1 \
-		ca-certificates \
-		curl && \
-# apt cleanup
-	apt-get autoremove -y && \
-	apt-get clean && \
-	find /var/lib/apt/lists/ -type f -not -name lock -delete; \
-# add user and link ~/.local/share/polkadot to /data
-	useradd -m -u 1000 -U -s /bin/sh -d /polkadot polkadot && \
-	mkdir -p /data /polkadot/.local/share && \
-	chown -R polkadot:polkadot /data && \
-	ln -s /data /polkadot/.local/share/polkadot
+ARG SUBKEY_VERSION=2.0.1
 
-# add polkadot binary to docker image
-COPY ./polkadot /usr/local/bin
+# build subkey
+RUN cargo install --force subkey --git https://github.com/paritytech/substrate --version ${SUBKEY_VERSION} --locked
+RUN cp /usr/local/cargo/bin/subkey /subkey
 
-USER polkadot
+# build sample data fetcher
+#FROM paritytech/ci-linux:production as data_fetcher_builder
+ARG DATA_FETECHER_REPO="https://github.com/Kylin-Network/sample-data-fetcher.git"
+ARG DATA_FETECHER_BRANCH="master"
+ARG PROFILE="release"
 
-# check if executable works in this container
-RUN /usr/local/bin/polkadot --version
+WORKDIR /builds/
+RUN git clone --recursive ${DATA_FETECHER_REPO}
+WORKDIR /builds/sample-data-fetcher
+RUN cargo build --${PROFILE}
+RUN cp target/${PROFILE}/data_fetcher /data_fetcher
 
-EXPOSE 30333 9933 9944
-VOLUME ["/polkadot"]
+#
+# build Polkadot JS apps
+#FROM paritytech/ci-linux:production as frontend_builder
+#
+LABEL maintainer="kylin-dev"
+ARG FRONT_REPO="https://github.com/Kylin-Network/apps.git"
+ARG FRONT_BRANCH="master"
 
-ENTRYPOINT ["/usr/local/bin/polkadot"]
+WORKDIR /builds/
+RUN git clone --recursive ${FRONT_REPO}
+WORKDIR /builds/apps
+
+RUN apt update && apt install gnupg2 curl ca-certificates -y
+RUN curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add - && echo "deb https://dl.yarnpkg.com/debian/ stable main" | tee /etc/apt/sources.list.d/yarn.list
+RUN apt update && apt install yarn -y
+RUN apt purge nodejs npm -y
+
+RUN apt-get install -y \
+    software-properties-common \
+    vim\
+    npm
+
+RUN npm install npm@latest -g && \
+    npm install n -g && \
+    n latest
+RUN YARN_CHECKSUM_BEHAVIOR=update yarn && yarn build:www
+
+ARG PROFILE="release"
+ENV DEBIAN_FRONTEND noninteractive
+RUN apt-get update && apt-get install curl ca-certificates npm nodejs -y
+RUN npm install -g serve
