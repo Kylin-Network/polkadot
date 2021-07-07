@@ -97,7 +97,6 @@ opt-level = 3
 [profile.release]
 # Polkadot runtime requires unwinding.
 panic = "unwind"
-debug = true
 
 
 [features]
