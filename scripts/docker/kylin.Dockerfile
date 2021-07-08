@@ -1,4 +1,4 @@
-# build polkadot-node
+#kylinnetwork/polkadot:latest 
 FROM paritytech/ci-linux:production as builder
 
 LABEL maintainer="kylin-dev"
