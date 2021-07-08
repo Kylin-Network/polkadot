@@ -68,13 +68,13 @@ ARG PROFILE="release"
 ENV DEBIAN_FRONTEND noninteractive
 RUN apt-get update && apt-get install curl ca-certificates npm nodejs -y
 RUN npm install -g serve
-#COPY --from=builder /polkadot /
-#COPY --from=builder /subkey /
-#
-#COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/es_index.json /es_index.json
-#COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/kibana.ndjson /kibana.ndjson
-#COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/init_es_index.sh /init_es_index.sh
-#COPY --from=data_fetcher_builder /builds/sample-data-fetcher/data/init_kibana_dashboard.sh /init_kibana_dashboard.sh
 
-#COPY --from=frontend_builder /builds/apps/packages/apps /apps
+ARG POLKADOT_LAUNCH_REPO="https://github.com/Kylin-Network/polkadot-launch.git"
+ARG DATA_FETECHER_BRANCH="master"
+
+WORKDIR /builds/
+RUN git clone --recursive ${POLKADOT_LAUNCH_REPO}
+WORKDIR /builds/polkadot-launch
+RUN yarn
+
 
