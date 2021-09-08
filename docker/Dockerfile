@@ -15,6 +15,10 @@ LABEL description="This is the 2nd stage: a very small image where we copy the P
 ARG PROFILE=release
 COPY --from=builder /polkadot/target/$PROFILE/polkadot /usr/local/bin
 
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates
+
 RUN useradd -m -u 1000 -U -s /bin/sh -d /polkadot polkadot && \
 	mkdir -p /polkadot/.local/share && \
 	mkdir /data && \
