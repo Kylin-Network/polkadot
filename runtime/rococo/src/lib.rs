@@ -24,9 +24,7 @@ use authority_discovery_primitives::AuthorityId as AuthorityDiscoveryId;
 use beefy_primitives::{crypto::AuthorityId as BeefyId, mmr::MmrLeafVersion};
 use frame_support::{
 	construct_runtime, parameter_types,
-	traits::{
-		Contains, Everything, IsInVec, KeyOwnerProofSystem, Nothing, OnRuntimeUpgrade, Randomness,
-	},
+	traits::{Contains, Everything, IsInVec, KeyOwnerProofSystem, Nothing, Randomness},
 	weights::Weight,
 	PalletId,
 };
@@ -48,6 +46,7 @@ use runtime_common::{
 	BlockHashCount, BlockLength, BlockWeights, RocksDbWeight, SlowAdjustingFeeUpdate,
 };
 use runtime_parachains::{self, runtime_api_impl::v1 as runtime_api_impl};
+use scale_info::TypeInfo;
 use sp_core::{OpaqueMetadata, RuntimeDebug};
 use sp_runtime::{
 	create_runtime_str, generic, impl_opaque_keys,
@@ -95,6 +94,7 @@ use xcm_executor::XcmExecutor;
 /// Constant values used within the runtime.
 pub mod constants;
 mod validator_manager;
+mod weights;
 
 // Make the WASM binary available.
 #[cfg(feature = "std")]
@@ -103,9 +103,9 @@ include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 /// Runtime version (Rococo).
 pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("rococo-chachacha"),
-	impl_name: create_runtime_str!("centrifuge-rococo-chachacha-v1.7"),
+	impl_name: create_runtime_str!("centrifuge-rococo-chachacha-v1.8"),
 	authoring_version: 0,
-	spec_version: 9102,
+	spec_version: 9111,
 	impl_version: 0,
 	#[cfg(not(feature = "disable-runtime-api"))]
 	apis: RUNTIME_API_VERSIONS,
@@ -148,17 +148,6 @@ pub type SignedExtra = (
 	pallet_transaction_payment::ChargeTransactionPayment<Runtime>,
 );
 
-/// Migrate from `PalletVersion` to the new `StorageVersion`
-pub struct MigratePalletVersionToStorageVersion;
-
-impl OnRuntimeUpgrade for MigratePalletVersionToStorageVersion {
-	fn on_runtime_upgrade() -> frame_support::weights::Weight {
-		frame_support::migrations::migrate_from_pallet_version_to_storage_version::<
-			AllPalletsWithSystem,
-		>(&RocksDbWeight::get())
-	}
-}
-
 /// Unchecked extrinsic type as expected by this runtime.
 pub type UncheckedExtrinsic = generic::UncheckedExtrinsic<Address, Call, Signature, SignedExtra>;
 /// Executive: handles dispatch to the various modules.
@@ -168,7 +157,7 @@ pub type Executive = frame_executive::Executive<
 	frame_system::ChainContext<Runtime>,
 	Runtime,
 	AllPallets,
-	MigratePalletVersionToStorageVersion,
+	(),
 >;
 /// The payload being signed in transactions.
 pub type SignedPayload = generic::SignedPayload<Call, SignedExtra>;
@@ -226,7 +215,7 @@ construct_runtime! {
 		ParasDisputes: parachains_disputes::{Pallet, Storage, Event<T>},
 
 		// Parachain Onboarding Pallets
-		Registrar: paras_registrar::{Pallet, Call, Storage, Event<T>},
+		Registrar: paras_registrar::{Pallet, Call, Storage, Event<T>, Config},
 		Auctions: auctions::{Pallet, Call, Storage, Event<T>},
 		Crowdloan: crowdloan::{Pallet, Call, Storage, Event<T>},
 		Slots: slots::{Pallet, Call, Storage, Event<T>},
@@ -262,9 +251,11 @@ construct_runtime! {
 
 		Utility: pallet_utility::{Pallet, Call, Event} = 90,
 		Proxy: pallet_proxy::{Pallet, Call, Storage, Event<T>} = 91,
+		Multisig: pallet_multisig::{Pallet, Call, Storage, Event<T>},
 
 		// Pallet for sending XCM.
 		XcmPallet: pallet_xcm::{Pallet, Call, Storage, Event<T>, Origin} = 99,
+
 	}
 }
 
@@ -381,6 +372,7 @@ impl parachains_disputes::Config for Runtime {
 	type Event = Event;
 	type RewardValidators = ();
 	type PunishValidators = ();
+	type WeightInfo = weights::runtime_parachains_disputes::WeightInfo<Runtime>;
 }
 
 parameter_types! {
@@ -389,6 +381,9 @@ parameter_types! {
 
 parameter_types! {
 	pub const ImOnlineUnsignedPriority: TransactionPriority = TransactionPriority::max_value();
+	pub const MaxKeys: u32 = 10_000;
+	pub const MaxPeerInHeartbeats: u32 = 10_000;
+	pub const MaxPeerDataEncodingSize: u32 = 1_000;
 }
 
 impl pallet_im_online::Config for Runtime {
@@ -399,6 +394,9 @@ impl pallet_im_online::Config for Runtime {
 	type ReportUnresponsiveness = Offences;
 	type UnsignedPriority = ImOnlineUnsignedPriority;
 	type WeightInfo = ();
+	type MaxKeys = MaxKeys;
+	type MaxPeerInHeartbeats = MaxPeerInHeartbeats;
+	type MaxPeerDataEncodingSize = MaxPeerDataEncodingSize;
 }
 
 parameter_types! {
@@ -454,11 +452,15 @@ impl pallet_timestamp::Config for Runtime {
 
 parameter_types! {
 	pub const TransactionByteFee: Balance = 10 * MILLICENTS;
+	/// This value increases the priority of `Operational` transactions by adding
+	/// a "virtual tip" that's equal to the `OperationalFeeMultiplier * final_fee`.
+	pub const OperationalFeeMultiplier: u8 = 5;
 }
 
 impl pallet_transaction_payment::Config for Runtime {
 	type OnChargeTransaction = CurrencyAdapter<Balances, ToAuthor<Runtime>>;
 	type TransactionByteFee = TransactionByteFee;
+	type OperationalFeeMultiplier = OperationalFeeMultiplier;
 	type WeightToFee = WeightToFee;
 	type FeeMultiplierUpdate = SlowAdjustingFeeUpdate<Self>;
 }
@@ -518,6 +520,8 @@ impl pallet_babe::Config for Runtime {
 		pallet_babe::EquivocationHandler<Self::KeyOwnerIdentification, Offences, ReportLongevity>;
 
 	type WeightInfo = ();
+
+	type MaxAuthorities = MaxAuthorities;
 }
 
 parameter_types! {
@@ -557,6 +561,7 @@ impl pallet_grandpa::Config for Runtime {
 	>;
 
 	type WeightInfo = ();
+	type MaxAuthorities = MaxAuthorities;
 }
 
 parameter_types! {
@@ -572,7 +577,9 @@ impl pallet_authorship::Config for Runtime {
 
 impl parachains_origin::Config for Runtime {}
 
-impl parachains_configuration::Config for Runtime {}
+impl parachains_configuration::Config for Runtime {
+	type WeightInfo = parachains_configuration::weights::WeightInfo<Runtime>;
+}
 
 impl parachains_shared::Config for Runtime {}
 
@@ -592,6 +599,7 @@ impl parachains_inclusion::Config for Runtime {
 impl parachains_paras::Config for Runtime {
 	type Origin = Origin;
 	type Event = Event;
+	type WeightInfo = parachains_paras::weights::WeightInfo<Runtime>;
 }
 
 parameter_types! {
@@ -625,14 +633,14 @@ type LocalOriginConverter = (
 );
 
 parameter_types! {
-	pub const BaseXcmWeight: Weight = 100_000;
+	pub const BaseXcmWeight: Weight = 1_000_000_000;
 }
 
 /// The XCM router. When we want to send an XCM message, we use this type. It amalgamates all of our
 /// individual routers.
 pub type XcmRouter = (
 	// Only one router so far - use DMP to communicate with child parachains.
-	xcm_sender::ChildParachainRouter<Runtime, xcm::AlwaysRelease>,
+	xcm_sender::ChildParachainRouter<Runtime, XcmPallet>,
 );
 
 parameter_types! {
@@ -641,6 +649,7 @@ parameter_types! {
 	pub const RococoForTrick: (MultiAssetFilter, MultiLocation) = (Rococo::get(), Parachain(110).into());
 	pub const RococoForTrack: (MultiAssetFilter, MultiLocation) = (Rococo::get(), Parachain(120).into());
 	pub const RococoForStatemint: (MultiAssetFilter, MultiLocation) = (Rococo::get(), Parachain(1001).into());
+	pub const RococoForCanvas: (MultiAssetFilter, MultiLocation) = (Rococo::get(), Parachain(1002).into());
 	pub const MaxInstructions: u32 = 100;
 }
 pub type TrustedTeleporters = (
@@ -648,6 +657,7 @@ pub type TrustedTeleporters = (
 	xcm_builder::Case<RococoForTrick>,
 	xcm_builder::Case<RococoForTrack>,
 	xcm_builder::Case<RococoForStatemint>,
+	xcm_builder::Case<RococoForCanvas>,
 );
 
 parameter_types! {
@@ -657,6 +667,7 @@ parameter_types! {
 			Parachain(110).into(),
 			Parachain(120).into(),
 			Parachain(1001).into(),
+			Parachain(1002).into(),
 		];
 }
 
@@ -728,6 +739,7 @@ impl parachains_ump::Config for Runtime {
 	type Event = Event;
 	type UmpSink = crate::parachains_ump::XcmSink<XcmExecutor<XcmConfig>, Runtime>;
 	type FirstMessageFactorPercent = FirstMessageFactorPercent;
+	type ExecuteOverweightOrigin = EnsureRoot<AccountId>;
 }
 
 impl parachains_dmp::Config for Runtime {}
@@ -745,6 +757,7 @@ impl parachains_scheduler::Config for Runtime {}
 impl parachains_initializer::Config for Runtime {
 	type Randomness = pallet_babe::RandomnessFromOneEpochAgo<Runtime>;
 	type ForceOrigin = EnsureRoot<AccountId>;
+	type WeightInfo = ();
 }
 
 impl paras_sudo_wrapper::Config for Runtime {}
@@ -990,6 +1003,7 @@ impl slots::Config for Runtime {
 	type Currency = Balances;
 	type Registrar = Registrar;
 	type LeasePeriod = LeasePeriod;
+	type LeaseOffset = ();
 	type WeightInfo = slots::TestWeightInfo;
 }
 
@@ -1043,7 +1057,17 @@ parameter_types! {
 
 /// The type used to represent the kinds of proxying allowed.
 #[derive(
-	Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Encode, Decode, RuntimeDebug, MaxEncodedLen,
+	Copy,
+	Clone,
+	Eq,
+	PartialEq,
+	Ord,
+	PartialOrd,
+	Encode,
+	Decode,
+	RuntimeDebug,
+	MaxEncodedLen,
+	TypeInfo,
 )]
 pub enum ProxyType {
 	Any,
@@ -1060,10 +1084,13 @@ impl InstanceFilter<Call> for ProxyType {
 		match self {
 			ProxyType::Any => true,
 			ProxyType::CancelProxy =>
-				matches!(c, Call::Proxy(pallet_proxy::Call::reject_announcement(..))),
+				matches!(c, Call::Proxy(pallet_proxy::Call::reject_announcement { .. })),
 			ProxyType::Auction => matches!(
 				c,
-				Call::Auctions(..) | Call::Crowdloan(..) | Call::Registrar(..) | Call::Slots(..)
+				Call::Auctions { .. } |
+					Call::Crowdloan { .. } |
+					Call::Registrar { .. } |
+					Call::Multisig(..) | Call::Slots { .. }
 			),
 		}
 	}
@@ -1120,6 +1147,24 @@ impl pallet_membership::Config for Runtime {
 	type WeightInfo = ();
 }
 
+parameter_types! {
+	// One storage item; key size is 32; value is size 4+4+16+32 bytes = 56 bytes.
+	pub const DepositBase: Balance = deposit(1, 88);
+	// Additional storage item size of 32 bytes.
+	pub const DepositFactor: Balance = deposit(0, 32);
+	pub const MaxSignatories: u16 = 100;
+}
+
+impl pallet_multisig::Config for Runtime {
+	type Event = Event;
+	type Call = Call;
+	type Currency = Balances;
+	type DepositBase = DepositBase;
+	type DepositFactor = DepositFactor;
+	type MaxSignatories = MaxSignatories;
+	type WeightInfo = ();
+}
+
 #[cfg(not(feature = "disable-runtime-api"))]
 sp_api::impl_runtime_apis! {
 	impl sp_api::Core<Block> for Runtime {
@@ -1138,7 +1183,7 @@ sp_api::impl_runtime_apis! {
 
 	impl sp_api::Metadata<Block> for Runtime {
 		fn metadata() -> OpaqueMetadata {
-			Runtime::metadata().into()
+			OpaqueMetadata::new(Runtime::metadata().into())
 		}
 	}
 
@@ -1294,7 +1339,7 @@ sp_api::impl_runtime_apis! {
 				slot_duration: Babe::slot_duration(),
 				epoch_length: EpochDurationInBlocks::get().into(),
 				c: BABE_GENESIS_EPOCH_CONFIG.c,
-				genesis_authorities: Babe::authorities(),
+				genesis_authorities: Babe::authorities().to_vec(),
 				randomness: Babe::randomness(),
 				allowed_slots: BABE_GENESIS_EPOCH_CONFIG.allowed_slots,
 			}
@@ -1540,6 +1585,54 @@ sp_api::impl_runtime_apis! {
 		}
 		fn query_fee_details(uxt: <Block as BlockT>::Extrinsic, len: u32) -> FeeDetails<Balance> {
 			TransactionPayment::query_fee_details(uxt, len)
+		}
+	}
+
+	#[cfg(feature = "runtime-benchmarks")]
+	impl frame_benchmarking::Benchmark<Block> for Runtime {
+		fn benchmark_metadata(extra: bool) -> (
+			Vec<frame_benchmarking::BenchmarkList>,
+			Vec<frame_support::traits::StorageInfo>,
+		) {
+			use frame_benchmarking::{list_benchmark, Benchmarking, BenchmarkList};
+			use frame_support::traits::StorageInfoTrait;
+
+			let mut list = Vec::<BenchmarkList>::new();
+
+			list_benchmark!(list, extra, runtime_parachains::disputes, ParasDisputes);
+
+			let storage_info = AllPalletsWithSystem::storage_info();
+
+			return (list, storage_info)
+		}
+
+		fn dispatch_benchmark(
+			config: frame_benchmarking::BenchmarkConfig,
+		) -> Result<
+			Vec<frame_benchmarking::BenchmarkBatch>,
+			sp_runtime::RuntimeString,
+		> {
+			use frame_benchmarking::{Benchmarking, BenchmarkBatch, add_benchmark, TrackedStorageKey};
+
+			let mut batches = Vec::<BenchmarkBatch>::new();
+			let whitelist: Vec<TrackedStorageKey> = vec![
+				// Block Number
+				hex_literal::hex!("26aa394eea5630e07c48ae0c9558cef702a5c1b19ab7a04f536c519aca4983ac").to_vec().into(),
+				// Total Issuance
+				hex_literal::hex!("c2261276cc9d1f8598ea4b6a74b15c2f57c875e4cff74148e4628f264b974c80").to_vec().into(),
+				// Execution Phase
+				hex_literal::hex!("26aa394eea5630e07c48ae0c9558cef7ff553b5a9862a516939d82b3d3d8661a").to_vec().into(),
+				// Event Count
+				hex_literal::hex!("26aa394eea5630e07c48ae0c9558cef70a98fdbe9ce6c55837576c60c7af3850").to_vec().into(),
+				// System Events
+				hex_literal::hex!("26aa394eea5630e07c48ae0c9558cef780d41e5e16056765bc8461851072c9d7").to_vec().into(),
+			];
+			let params = (&config, &whitelist);
+
+			add_benchmark!(params, batches, runtime_parachains::disputes, ParasDisputes);
+
+			if batches.is_empty() { return Err("Benchmark not found for this pallet.".into()) }
+			Ok(batches)
 		}
 	}
 }
