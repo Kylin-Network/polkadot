@@ -19,6 +19,7 @@
 use super::Junction;
 use core::{convert::TryFrom, mem, result};
 use parity_scale_codec::{Decode, Encode};
+use scale_info::TypeInfo;
 
 /// A relative path between state-bearing consensus systems.
 ///
@@ -46,7 +47,7 @@ use parity_scale_codec::{Decode, Encode};
 /// that a value is strictly an interior location, in those cases, `Junctions` may be used.
 ///
 /// The `MultiLocation` value of `Null` simply refers to the interpreting consensus system.
-#[derive(Clone, Decode, Encode, Eq, PartialEq, Ord, PartialOrd, Debug)]
+#[derive(Clone, Decode, Encode, Eq, PartialEq, Ord, PartialOrd, Debug, TypeInfo)]
 pub struct MultiLocation {
 	/// The number of parent junctions at the beginning of this `MultiLocation`.
 	pub parents: u8,
@@ -54,21 +55,26 @@ pub struct MultiLocation {
 	pub interior: Junctions,
 }
 
+impl Default for MultiLocation {
+	fn default() -> Self {
+		Self { parents: 0, interior: Junctions::Here }
+	}
+}
+
 /// A relative location which is constrained to be an interior location of the context.
 ///
 /// See also `MultiLocation`.
 pub type InteriorMultiLocation = Junctions;
 
-impl Default for MultiLocation {
-	fn default() -> Self {
-		Self::here()
-	}
-}
-
 impl MultiLocation {
 	/// Creates a new `MultiLocation` with the given number of parents and interior junctions.
 	pub fn new(parents: u8, junctions: Junctions) -> MultiLocation {
 		MultiLocation { parents, interior: junctions }
+	}
+
+	/// Consume `self` and return the equivalent `VersionedMultiLocation` value.
+	pub fn versioned(self) -> crate::VersionedMultiLocation {
+		self.into()
 	}
 
 	/// Creates a new `MultiLocation` with 0 parents and a `Here` interior.
@@ -93,7 +99,7 @@ impl MultiLocation {
 		MultiLocation { parents, interior: Junctions::Here }
 	}
 
-	/// Whether or not the `MultiLocation` has no parents and has a `Here` interior.
+	/// Whether the `MultiLocation` has no parents and has a `Here` interior.
 	pub const fn is_here(&self) -> bool {
 		self.parents == 0 && self.interior.len() == 0
 	}
@@ -113,7 +119,7 @@ impl MultiLocation {
 		self.parents
 	}
 
-	/// Returns boolean indicating whether or not `self` contains only the specified amount of
+	/// Returns boolean indicating whether `self` contains only the specified amount of
 	/// parents and no interior junctions.
 	pub const fn contains_parents_only(&self, count: u8) -> bool {
 		matches!(self.interior, Junctions::Here) && self.parents == count
@@ -332,8 +338,8 @@ impl From<Parent> for MultiLocation {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct ParentThen(Junctions);
 impl From<ParentThen> for MultiLocation {
-	fn from(x: ParentThen) -> Self {
-		MultiLocation { parents: 1, interior: x.0 }
+	fn from(ParentThen(interior): ParentThen) -> Self {
+		MultiLocation { parents: 1, interior }
 	}
 }
 
@@ -341,8 +347,8 @@ impl From<ParentThen> for MultiLocation {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Ancestor(u8);
 impl From<Ancestor> for MultiLocation {
-	fn from(x: Ancestor) -> Self {
-		MultiLocation { parents: x.0, interior: Junctions::Here }
+	fn from(Ancestor(parents): Ancestor) -> Self {
+		MultiLocation { parents, interior: Junctions::Here }
 	}
 }
 
@@ -350,8 +356,8 @@ impl From<Ancestor> for MultiLocation {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct AncestorThen(u8, Junctions);
 impl From<AncestorThen> for MultiLocation {
-	fn from(x: AncestorThen) -> Self {
-		MultiLocation { parents: x.0, interior: x.1 }
+	fn from(AncestorThen(parents, interior): AncestorThen) -> Self {
+		MultiLocation { parents, interior }
 	}
 }
 
@@ -365,7 +371,7 @@ const MAX_JUNCTIONS: usize = 8;
 ///
 /// Parent junctions cannot be constructed with this type. Refer to `MultiLocation` for
 /// instructions on constructing parent junctions.
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Encode, Decode, Debug)]
+#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Encode, Decode, Debug, TypeInfo)]
 pub enum Junctions {
 	/// The interpreting consensus system.
 	Here,

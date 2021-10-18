@@ -1,4 +1,4 @@
-// Copyright 2020 Parity Technologies (UK) Ltd.
+// Copyright 2020 Parity Technologies query_id: (), max_response_weight: ()  query_id: (), max_response_weight: ()  (UK) Ltd.
 // This file is part of Polkadot.
 
 // Polkadot is free software: you can redistribute it and/or modify
@@ -57,23 +57,11 @@ fn take_weight_credit_barrier_should_work() {
 	let mut message =
 		Xcm::<()>(vec![TransferAsset { assets: (Parent, 100).into(), beneficiary: Here.into() }]);
 	let mut weight_credit = 10;
-	let r = TakeWeightCredit::should_execute(
-		&Parent.into(),
-		true,
-		&mut message,
-		10,
-		&mut weight_credit,
-	);
+	let r = TakeWeightCredit::should_execute(&Parent.into(), &mut message, 10, &mut weight_credit);
 	assert_eq!(r, Ok(()));
 	assert_eq!(weight_credit, 0);
 
-	let r = TakeWeightCredit::should_execute(
-		&Parent.into(),
-		true,
-		&mut message,
-		10,
-		&mut weight_credit,
-	);
+	let r = TakeWeightCredit::should_execute(&Parent.into(), &mut message, 10, &mut weight_credit);
 	assert_eq!(r, Err(()));
 	assert_eq!(weight_credit, 0);
 }
@@ -87,7 +75,6 @@ fn allow_unpaid_should_work() {
 
 	let r = AllowUnpaidExecutionFrom::<IsInVec<AllowUnpaidFrom>>::should_execute(
 		&Parachain(1).into(),
-		true,
 		&mut message,
 		10,
 		&mut 0,
@@ -96,7 +83,6 @@ fn allow_unpaid_should_work() {
 
 	let r = AllowUnpaidExecutionFrom::<IsInVec<AllowUnpaidFrom>>::should_execute(
 		&Parent.into(),
-		true,
 		&mut message,
 		10,
 		&mut 0,
@@ -113,7 +99,6 @@ fn allow_paid_should_work() {
 
 	let r = AllowTopLevelPaidExecutionFrom::<IsInVec<AllowPaidFrom>>::should_execute(
 		&Parachain(1).into(),
-		true,
 		&mut message,
 		10,
 		&mut 0,
@@ -129,7 +114,6 @@ fn allow_paid_should_work() {
 
 	let r = AllowTopLevelPaidExecutionFrom::<IsInVec<AllowPaidFrom>>::should_execute(
 		&Parent.into(),
-		true,
 		&mut underpaying_message,
 		30,
 		&mut 0,
@@ -145,7 +129,6 @@ fn allow_paid_should_work() {
 
 	let r = AllowTopLevelPaidExecutionFrom::<IsInVec<AllowPaidFrom>>::should_execute(
 		&Parachain(1).into(),
-		true,
 		&mut paying_message,
 		30,
 		&mut 0,
@@ -154,7 +137,6 @@ fn allow_paid_should_work() {
 
 	let r = AllowTopLevelPaidExecutionFrom::<IsInVec<AllowPaidFrom>>::should_execute(
 		&Parent.into(),
-		true,
 		&mut paying_message,
 		30,
 		&mut 0,
@@ -168,7 +150,6 @@ fn paying_reserve_deposit_should_work() {
 	add_reserve(Parent.into(), (Parent, WildFungible).into());
 	WeightPrice::set((Parent.into(), 1_000_000_000_000));
 
-	let origin = Parent.into();
 	let fees = (Parent, 30).into();
 	let message = Xcm(vec![
 		ReserveAssetDeposited((Parent, 100).into()),
@@ -176,7 +157,7 @@ fn paying_reserve_deposit_should_work() {
 		DepositAsset { assets: All.into(), max_assets: 1, beneficiary: Here.into() },
 	]);
 	let weight_limit = 50;
-	let r = XcmExecutor::<TestConfig>::execute_xcm(origin, message, weight_limit);
+	let r = XcmExecutor::<TestConfig>::execute_xcm(Parent, message, weight_limit);
 	assert_eq!(r, Outcome::Complete(30));
 	assert_eq!(assets(3000), vec![(Parent, 70).into()]);
 }
@@ -189,7 +170,7 @@ fn transfer_should_work() {
 	add_asset(1001, (Here, 1000));
 	// They want to transfer 100 of them to their sibling parachain #2
 	let r = XcmExecutor::<TestConfig>::execute_xcm(
-		Parachain(1).into(),
+		Parachain(1),
 		Xcm(vec![TransferAsset {
 			assets: (Here, 100).into(),
 			beneficiary: X1(AccountIndex64 { index: 3, network: Any }).into(),
@@ -452,7 +433,7 @@ fn reserve_transfer_should_work() {
 	// They want to transfer 100 of our native asset from sovereign account of parachain #1 into #2
 	// and let them know to hand it to account #3.
 	let r = XcmExecutor::<TestConfig>::execute_xcm(
-		Parachain(1).into(),
+		Parachain(1),
 		Xcm(vec![TransferReserveAsset {
 			assets: (Here, 100).into(),
 			dest: Parachain(2).into(),
@@ -481,17 +462,128 @@ fn reserve_transfer_should_work() {
 }
 
 #[test]
+fn simple_version_subscriptions_should_work() {
+	AllowSubsFrom::set(vec![Parent.into()]);
+
+	let origin = Parachain(1000).into();
+	let message = Xcm::<TestCall>(vec![
+		SetAppendix(Xcm(vec![])),
+		SubscribeVersion { query_id: 42, max_response_weight: 5000 },
+	]);
+	let weight_limit = 20;
+	let r = XcmExecutor::<TestConfig>::execute_xcm(origin, message, weight_limit);
+	assert_eq!(r, Outcome::Error(XcmError::Barrier));
+
+	let origin = Parachain(1000).into();
+	let message =
+		Xcm::<TestCall>(vec![SubscribeVersion { query_id: 42, max_response_weight: 5000 }]);
+	let weight_limit = 10;
+	let r = XcmExecutor::<TestConfig>::execute_xcm(origin, message.clone(), weight_limit);
+	assert_eq!(r, Outcome::Error(XcmError::Barrier));
+
+	let r = XcmExecutor::<TestConfig>::execute_xcm(Parent, message, weight_limit);
+	assert_eq!(r, Outcome::Complete(10));
+
+	assert_eq!(SubscriptionRequests::get(), vec![(Parent.into(), Some((42, 5000)))]);
+}
+
+#[test]
+fn version_subscription_instruction_should_work() {
+	let origin = Parachain(1000).into();
+	let message = Xcm::<TestCall>(vec![
+		DescendOrigin(X1(AccountIndex64 { index: 1, network: Any })),
+		SubscribeVersion { query_id: 42, max_response_weight: 5000 },
+	]);
+	let weight_limit = 20;
+	let r = XcmExecutor::<TestConfig>::execute_xcm_in_credit(
+		origin.clone(),
+		message.clone(),
+		weight_limit,
+		weight_limit,
+	);
+	assert_eq!(r, Outcome::Incomplete(20, XcmError::BadOrigin));
+
+	let message = Xcm::<TestCall>(vec![
+		SetAppendix(Xcm(vec![])),
+		SubscribeVersion { query_id: 42, max_response_weight: 5000 },
+	]);
+	let r = XcmExecutor::<TestConfig>::execute_xcm_in_credit(
+		origin,
+		message.clone(),
+		weight_limit,
+		weight_limit,
+	);
+	assert_eq!(r, Outcome::Complete(20));
+
+	assert_eq!(SubscriptionRequests::get(), vec![(Parachain(1000).into(), Some((42, 5000)))]);
+}
+
+#[test]
+fn simple_version_unsubscriptions_should_work() {
+	AllowSubsFrom::set(vec![Parent.into()]);
+
+	let origin = Parachain(1000).into();
+	let message = Xcm::<TestCall>(vec![SetAppendix(Xcm(vec![])), UnsubscribeVersion]);
+	let weight_limit = 20;
+	let r = XcmExecutor::<TestConfig>::execute_xcm(origin, message, weight_limit);
+	assert_eq!(r, Outcome::Error(XcmError::Barrier));
+
+	let origin = Parachain(1000).into();
+	let message = Xcm::<TestCall>(vec![UnsubscribeVersion]);
+	let weight_limit = 10;
+	let r = XcmExecutor::<TestConfig>::execute_xcm(origin, message.clone(), weight_limit);
+	assert_eq!(r, Outcome::Error(XcmError::Barrier));
+
+	let r = XcmExecutor::<TestConfig>::execute_xcm(Parent, message, weight_limit);
+	assert_eq!(r, Outcome::Complete(10));
+
+	assert_eq!(SubscriptionRequests::get(), vec![(Parent.into(), None)]);
+	assert_eq!(sent_xcm(), vec![]);
+}
+
+#[test]
+fn version_unsubscription_instruction_should_work() {
+	let origin = Parachain(1000).into();
+
+	// Not allowed to do it when origin has been changed.
+	let message = Xcm::<TestCall>(vec![
+		DescendOrigin(X1(AccountIndex64 { index: 1, network: Any })),
+		UnsubscribeVersion,
+	]);
+	let weight_limit = 20;
+	let r = XcmExecutor::<TestConfig>::execute_xcm_in_credit(
+		origin.clone(),
+		message.clone(),
+		weight_limit,
+		weight_limit,
+	);
+	assert_eq!(r, Outcome::Incomplete(20, XcmError::BadOrigin));
+
+	// Fine to do it when origin is untouched.
+	let message = Xcm::<TestCall>(vec![SetAppendix(Xcm(vec![])), UnsubscribeVersion]);
+	let r = XcmExecutor::<TestConfig>::execute_xcm_in_credit(
+		origin,
+		message.clone(),
+		weight_limit,
+		weight_limit,
+	);
+	assert_eq!(r, Outcome::Complete(20));
+
+	assert_eq!(SubscriptionRequests::get(), vec![(Parachain(1000).into(), None)]);
+	assert_eq!(sent_xcm(), vec![]);
+}
+
+#[test]
 fn transacting_should_work() {
 	AllowUnpaidFrom::set(vec![Parent.into()]);
 
-	let origin = Parent.into();
 	let message = Xcm::<TestCall>(vec![Transact {
 		origin_type: OriginKind::Native,
 		require_weight_at_most: 50,
 		call: TestCall::Any(50, None).encode().into(),
 	}]);
 	let weight_limit = 60;
-	let r = XcmExecutor::<TestConfig>::execute_xcm(origin, message, weight_limit);
+	let r = XcmExecutor::<TestConfig>::execute_xcm(Parent, message, weight_limit);
 	assert_eq!(r, Outcome::Complete(60));
 }
 
@@ -499,14 +591,13 @@ fn transacting_should_work() {
 fn transacting_should_respect_max_weight_requirement() {
 	AllowUnpaidFrom::set(vec![Parent.into()]);
 
-	let origin = Parent.into();
 	let message = Xcm::<TestCall>(vec![Transact {
 		origin_type: OriginKind::Native,
 		require_weight_at_most: 40,
 		call: TestCall::Any(50, None).encode().into(),
 	}]);
 	let weight_limit = 60;
-	let r = XcmExecutor::<TestConfig>::execute_xcm(origin, message, weight_limit);
+	let r = XcmExecutor::<TestConfig>::execute_xcm(Parent, message, weight_limit);
 	assert_eq!(r, Outcome::Incomplete(50, XcmError::TooMuchWeightRequired));
 }
 
@@ -514,14 +605,13 @@ fn transacting_should_respect_max_weight_requirement() {
 fn transacting_should_refund_weight() {
 	AllowUnpaidFrom::set(vec![Parent.into()]);
 
-	let origin = Parent.into();
 	let message = Xcm::<TestCall>(vec![Transact {
 		origin_type: OriginKind::Native,
 		require_weight_at_most: 50,
 		call: TestCall::Any(50, Some(30)).encode().into(),
 	}]);
 	let weight_limit = 60;
-	let r = XcmExecutor::<TestConfig>::execute_xcm(origin, message, weight_limit);
+	let r = XcmExecutor::<TestConfig>::execute_xcm(Parent, message, weight_limit);
 	assert_eq!(r, Outcome::Complete(40));
 }
 
@@ -555,9 +645,8 @@ fn paid_transacting_should_refund_payment_for_unused_weight() {
 #[test]
 fn prepaid_result_of_query_should_get_free_execution() {
 	let query_id = 33;
-	let origin: MultiLocation = Parent.into();
 	// We put this in manually here, but normally this would be done at the point of crafting the message.
-	expect_response(query_id, origin.clone());
+	expect_response(query_id, Parent.into());
 
 	let the_response = Response::Assets((Parent, 100).into());
 	let message = Xcm::<TestCall>(vec![QueryResponse {
@@ -568,12 +657,12 @@ fn prepaid_result_of_query_should_get_free_execution() {
 	let weight_limit = 10;
 
 	// First time the response gets through since we're expecting it...
-	let r = XcmExecutor::<TestConfig>::execute_xcm(origin.clone(), message.clone(), weight_limit);
+	let r = XcmExecutor::<TestConfig>::execute_xcm(Parent, message.clone(), weight_limit);
 	assert_eq!(r, Outcome::Complete(10));
 	assert_eq!(response(query_id).unwrap(), the_response);
 
 	// Second time it doesn't, since we're not.
-	let r = XcmExecutor::<TestConfig>::execute_xcm(origin.clone(), message.clone(), weight_limit);
+	let r = XcmExecutor::<TestConfig>::execute_xcm(Parent, message.clone(), weight_limit);
 	assert_eq!(r, Outcome::Error(XcmError::Barrier));
 }
 

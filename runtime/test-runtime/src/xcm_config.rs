@@ -36,7 +36,7 @@ pub type LocalOriginToLocation = (
 
 pub struct DoNothingRouter;
 impl SendXcm for DoNothingRouter {
-	fn send_xcm(_dest: MultiLocation, _msg: Xcm<()>) -> SendResult {
+	fn send_xcm(_dest: impl Into<MultiLocation>, _msg: Xcm<()>) -> SendResult {
 		Ok(())
 	}
 }
@@ -88,4 +88,5 @@ impl xcm_executor::Config for XcmConfig {
 	type ResponseHandler = super::Xcm;
 	type AssetTrap = super::Xcm;
 	type AssetClaims = super::Xcm;
+	type SubscriptionService = super::Xcm;
 }

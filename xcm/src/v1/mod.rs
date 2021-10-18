@@ -14,7 +14,51 @@
 // You should have received a copy of the GNU General Public License
 // along with Polkadot.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Version 1 of the Cross-Consensus Message format data structures.
+//! # XCM Version 1
+//! Version 1 of the Cross-Consensus Message format data structures. The comprehensive list of
+//! changes can be found in
+//! [this PR description](https://github.com/paritytech/polkadot/pull/2815#issue-608567900).
+//!
+//! ## Changes to be aware of
+//! Most changes should automatically be resolved via the conversion traits (i.e. `TryFrom` and
+//! `From`). The list here is mostly for incompatible changes that result in an `Err(())` when
+//! attempting to convert XCM objects from v0.
+//!
+//! ### Junction
+//! - `v0::Junction::Parent` cannot be converted to v1, because the way we represent parents in v1
+//!   has changed - instead of being a property of the junction, v1 `MultiLocation`s now have an
+//!   extra field representing the number of parents that the `MultiLocation` contains.
+//!
+//! ### `MultiLocation`
+//! - The `try_from` conversion method will always canonicalize the v0 `MultiLocation` before
+//!   attempting to do the proper conversion. Since canonicalization is not a fallible operation,
+//!   we do not expect v0 `MultiLocation` to ever fail to be upgraded to v1.
+//!
+//! ### `MultiAsset`
+//! - Stronger typing to differentiate between a single class of `MultiAsset` and several classes
+//!   of `MultiAssets` is introduced. As the name suggests, a `Vec<MultiAsset>` that is used on all
+//!   APIs will instead be using a new type called `MultiAssets` (note the `s`).
+//! - All `MultiAsset` variants whose name contains "All" in it, namely `v0::MultiAsset::All`,
+//!   `v0::MultiAsset::AllFungible`, `v0::MultiAsset::AllNonFungible`,
+//!   `v0::MultiAsset::AllAbstractFungible`, `v0::MultiAsset::AllAbstractNonFungible`,
+//!   `v0::MultiAsset::AllConcreteFungible` and `v0::MultiAsset::AllConcreteNonFungible`, will fail
+//!   to convert to v1 `MultiAsset`, since v1 does not contain these variants.
+//! - Similarly, all `MultiAsset` variants whose name contains "All" in it can be converted into a
+//!   `WildMultiAsset`.
+//! - `v0::MultiAsset::None` is not represented at all in v1.
+//!
+//! ### XCM
+//! - No special attention necessary
+//!
+//! ### Order
+//! - `v1::Order::DepositAsset` and `v1::Order::DepositReserveAsset` both introduced a new
+//!   `max_asset` field that limits the maximum classes of assets that can be deposited. During
+//!   conversion from v0, the `max_asset` field defaults to 1.
+//! - v1 Orders that contain `MultiAsset` as argument(s) will need to explicitly specify the amount
+//!   and details of assets. This is to prevent accidental misuse of `All` to possibly transfer,
+//!   spend or otherwise perform unintended operations on `All` assets.
+//! - v1 Orders that do allow the notion of `All` to be used as wildcards, will instead use a new
+//!   type called `MultiAssetFilter`.
 
 use super::{
 	v0::{Response as OldResponse, Xcm as OldXcm},
@@ -29,6 +73,7 @@ use core::{
 };
 use derivative::Derivative;
 use parity_scale_codec::{self, Decode, Encode};
+use scale_info::TypeInfo;
 
 mod junction;
 mod multiasset;
@@ -75,10 +120,12 @@ pub mod prelude {
 }
 
 /// Response data to a query.
-#[derive(Clone, Eq, PartialEq, Encode, Decode, Debug)]
+#[derive(Clone, Eq, PartialEq, Encode, Decode, Debug, TypeInfo)]
 pub enum Response {
 	/// Some assets.
 	Assets(MultiAssets),
+	/// An XCM version.
+	Version(super::Version),
 }
 
 /// Cross-Consensus Message: A message from one consensus system to another.
@@ -89,10 +136,11 @@ pub enum Response {
 ///
 /// This is the inner XCM format and is version-sensitive. Messages are typically passed using the outer
 /// XCM format, known as `VersionedXcm`.
-#[derive(Derivative, Encode, Decode)]
+#[derive(Derivative, Encode, Decode, TypeInfo)]
 #[derivative(Clone(bound = ""), Eq(bound = ""), PartialEq(bound = ""), Debug(bound = ""))]
 #[codec(encode_bound())]
 #[codec(decode_bound())]
+#[scale_info(bounds(), skip_type_params(Call))]
 pub enum Xcm<Call> {
 	/// Withdraw asset(s) (`assets`) from the ownership of `origin` and place them into `holding`. Execute the
 	/// orders (`effects`).
@@ -270,6 +318,25 @@ pub enum Xcm<Call> {
 	/// Errors:
 	#[codec(index = 10)]
 	RelayedFrom { who: InteriorMultiLocation, message: alloc::boxed::Box<Xcm<Call>> },
+
+	/// Ask the destination system to respond with the most recent version of XCM that they
+	/// support in a `QueryResponse` instruction. Any changes to this should also elicit similar
+	/// responses when they happen.
+	///
+	/// Kind: *Instruction*
+	#[codec(index = 11)]
+	SubscribeVersion {
+		#[codec(compact)]
+		query_id: u64,
+		#[codec(compact)]
+		max_response_weight: u64,
+	},
+
+	/// Cancel the effect of a previous `SubscribeVersion` instruction.
+	///
+	/// Kind: *Instruction*
+	#[codec(index = 12)]
+	UnsubscribeVersion,
 }
 
 impl<Call> Xcm<Call> {
@@ -302,6 +369,9 @@ impl<Call> Xcm<Call> {
 				Transact { origin_type, require_weight_at_most, call: call.into() },
 			RelayedFrom { who, message } =>
 				RelayedFrom { who, message: alloc::boxed::Box::new((*message).into()) },
+			SubscribeVersion { query_id, max_response_weight } =>
+				SubscribeVersion { query_id, max_response_weight },
+			UnsubscribeVersion => UnsubscribeVersion,
 		}
 	}
 }
@@ -427,6 +497,9 @@ impl<Call> TryFrom<NewXcm<Call>> for Xcm<Call> {
 				HrmpChannelClosing { initiator, sender, recipient },
 			Instruction::Transact { origin_type, require_weight_at_most, call } =>
 				Transact { origin_type, require_weight_at_most, call },
+			Instruction::SubscribeVersion { query_id, max_response_weight } =>
+				SubscribeVersion { query_id, max_response_weight },
+			Instruction::UnsubscribeVersion => UnsubscribeVersion,
 			_ => return Err(()),
 		})
 	}
@@ -438,6 +511,7 @@ impl TryFrom<NewResponse> for Response {
 	fn try_from(response: NewResponse) -> result::Result<Self, ()> {
 		match response {
 			NewResponse::Assets(assets) => Ok(Self::Assets(assets)),
+			NewResponse::Version(version) => Ok(Self::Version(version)),
 			_ => Err(()),
 		}
 	}

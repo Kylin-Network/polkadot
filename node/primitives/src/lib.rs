@@ -22,7 +22,7 @@
 
 #![deny(missing_docs)]
 
-use std::{convert::TryFrom, pin::Pin};
+use std::{convert::TryFrom, pin::Pin, time::Duration};
 
 use bounded_vec::BoundedVec;
 use futures::Future;
@@ -70,6 +70,17 @@ pub const POV_BOMB_LIMIT: usize = (MAX_POV_SIZE * 4u32) as usize;
 ///
 /// Number of sessions we want to consider in disputes.
 pub const DISPUTE_WINDOW: SessionIndex = 6;
+
+/// The amount of time to spend on execution during backing.
+pub const BACKING_EXECUTION_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The amount of time to spend on execution during approval or disputes.
+///
+/// This is deliberately much longer than the backing execution timeout to
+/// ensure that in the absence of extremely large disparities between hardware,
+/// blocks that pass backing are considerd executable by approval checkers or
+/// dispute participants.
+pub const APPROVAL_EXECUTION_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// The cumulative weight of a block in a fork-choice rule.
 pub type BlockWeight = u32;
@@ -223,7 +234,7 @@ pub struct Collation<BlockNumber = polkadot_primitives::v1::BlockNumber> {
 	pub hrmp_watermark: BlockNumber,
 }
 
-/// Signal that is being returned back when a collation was seconded by a validator.
+/// Signal that is being returned when a collation was seconded by a validator.
 #[derive(Debug)]
 pub struct CollationSecondedSignal {
 	/// The hash of the relay chain block that was used as context to sign [`Self::statement`].
@@ -301,8 +312,8 @@ pub struct Proof(BoundedVec<BoundedVec<u8, 1, MERKLE_NODE_MAX_SIZE>, 1, MERKLE_P
 
 impl Proof {
 	/// This function allows to convert back to the standard nested Vec format
-	pub fn as_vec(&self) -> Vec<Vec<u8>> {
-		self.0.as_vec().iter().map(|v| v.as_vec().clone()).collect()
+	pub fn iter(&self) -> impl Iterator<Item = &[u8]> {
+		self.0.iter().map(|v| v.as_slice())
 	}
 
 	/// Construct an invalid dummy proof
@@ -365,7 +376,7 @@ impl Encode for Proof {
 	}
 
 	fn using_encoded<R, F: FnOnce(&[u8]) -> R>(&self, f: F) -> R {
-		let temp = self.as_vec();
+		let temp = self.0.iter().map(|v| v.as_vec()).collect::<Vec<_>>();
 		temp.using_encoded(f)
 	}
 }
@@ -404,8 +415,8 @@ pub struct ErasureChunk {
 
 impl ErasureChunk {
 	/// Convert bounded Vec Proof to regular Vec<Vec<u8>>
-	pub fn proof_as_vec(&self) -> Vec<Vec<u8>> {
-		self.proof.as_vec()
+	pub fn proof(&self) -> &Proof {
+		&self.proof
 	}
 }
 
