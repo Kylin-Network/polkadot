@@ -20,6 +20,17 @@ services:
     command: "--unsafe-ws-external --rpc-cors all --wasm-execution Compiled --rpc-external --rpc-methods Unsafe --validator --name chachacha-validator-2 --ws-port 9945 --port 30336 --rpc-port 9934 --chain rococo"
     volumes:
       - "polkadot_validator_2:/data"
+  validator_3:
+    container_name: validator_3
+    image: centrifugeio/polkadot:chachacha
+    ports:
+      - "30337:30336"
+      - "9935:9934"
+      - "9946:9945"
+    command: "--unsafe-ws-external --rpc-cors all --wasm-execution Compiled --rpc-external --rpc-methods Unsafe --validator --name chachacha-validator-3 --ws-port 9945 --port 30336 --rpc-port 9934 --chain rococo"
+    volumes:
+      - "polkadot_validator_3:/data"
 volumes:
   polkadot_validator_1:
   polkadot_validator_2:
+  polkadot_validator_3:
