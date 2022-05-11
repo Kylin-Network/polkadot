@@ -1,5 +1,5 @@
 [package]
-name = "polkadot-overseer-gen-proc-macro"
+name = "tracing-gum-proc-macro"
 version = "0.9.21"
 authors = ["Parity Technologies <admin@parity.io>"]
 edition = "2021"
@@ -16,13 +16,14 @@ syn = { version = "1.0.91", features = ["full", "extra-traits"] }
 quote = "1.0.18"
 proc-macro2 = "1.0.38"
 proc-macro-crate = "1.1.3"
-expander = { version = "0.0.6", default-features = false }
+expander = "0.0.6"
 
 [dev-dependencies]
 assert_matches = "1.5.0"
 
+
 [features]
 default = []
-# write the expanded version to a `overlord-expansion.[a-f0-9]{10}.rs`
+# write the expanded version to a `gum.[a-f0-9]{10}.rs`
 # in the `OUT_DIR` as defined by `cargo` for the `expander` crate.
 expand = []
