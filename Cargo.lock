@@ -7636,7 +7636,7 @@ dependencies = [
 name = "polkadot-statement-distribution"
 version = "0.9.21"
 dependencies = [
- "arrayvec 0.5.2",
+ "arrayvec 0.7.2",
  "assert_matches",
  "fatality",
  "futures 0.3.21",
