@@ -31,7 +31,7 @@ async-trait = "0.1.51"
 sp-keystore = { git = "https://github.com/paritytech/substrate", branch = "master" }
 futures = "0.3.16"
 futures-timer = "3.0.2"
-tracing = "0.1.26"
+tracing = "0.1.34"
 
 [features]
 default = [] # we do not enable disputes by default to avoid feature leak
