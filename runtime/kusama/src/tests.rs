@@ -18,8 +18,10 @@
 
 use crate::*;
 use frame_support::weights::{GetDispatchInfo, WeightToFeePolynomial};
+use keyring::Sr25519Keyring::Charlie;
 use pallet_transaction_payment::Multiplier;
 use parity_scale_codec::Encode;
+use runtime_common::MinimumMultiplier;
 use separator::Separatable;
 use sp_runtime::FixedPointNumber;
 
@@ -78,9 +80,9 @@ fn block_cost() {
 #[test]
 #[ignore]
 fn transfer_cost_min_multiplier() {
-	let min_multiplier = runtime_common::MinimumMultiplier::get();
+	let min_multiplier = MinimumMultiplier::get();
 	let call = pallet_balances::Call::<Runtime>::transfer_keep_alive {
-		dest: Default::default(),
+		dest: Charlie.to_account_id().into(),
 		value: Default::default(),
 	};
 	let info = call.get_dispatch_info();

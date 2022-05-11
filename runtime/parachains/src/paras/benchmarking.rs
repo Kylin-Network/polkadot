@@ -15,11 +15,15 @@
 // along with Polkadot.  If not, see <http://www.gnu.org/licenses/>.
 
 use super::*;
-use crate::{configuration::HostConfiguration, shared};
+use crate::configuration::HostConfiguration;
 use frame_benchmarking::benchmarks;
 use frame_system::RawOrigin;
-use primitives::v1::{HeadData, Id as ParaId, ValidationCode, MAX_CODE_SIZE, MAX_HEAD_DATA_SIZE};
+use primitives::v2::{HeadData, Id as ParaId, ValidationCode, MAX_CODE_SIZE, MAX_HEAD_DATA_SIZE};
 use sp_runtime::traits::{One, Saturating};
+
+mod pvf_check;
+
+use self::pvf_check::{VoteCause, VoteOutcome};
 
 // 2 ^ 10, because binary search time complexity is O(log(2, n)) and n = 1024 gives us a big and
 // round number.
@@ -81,6 +85,7 @@ benchmarks! {
 		let c in 1 .. MAX_CODE_SIZE;
 		let new_code = ValidationCode(vec![0; c as usize]);
 		let para_id = ParaId::from(c as u32);
+		<Pallet<T> as Store>::CurrentCodeHash::insert(&para_id, new_code.hash());
 		generate_disordered_pruning::<T>();
 	}: _(RawOrigin::Root, para_id, new_code)
 	verify {
@@ -108,7 +113,9 @@ benchmarks! {
 		let s in 1 .. MAX_HEAD_DATA_SIZE;
 		let para_id = ParaId::from(1000);
 		let new_head = HeadData(vec![0; s as usize]);
-		// schedule an expired code upgrade for this para_id so that force_note_new_head would use
+		let old_code_hash = ValidationCode(vec![0]).hash();
+		<Pallet<T> as Store>::CurrentCodeHash::insert(&para_id, old_code_hash);
+		// schedule an expired code upgrade for this `para_id` so that force_note_new_head would use
 		// the worst possible code path
 		let expired = frame_system::Pallet::<T>::block_number().saturating_sub(One::one());
 		let config = HostConfiguration::<T::BlockNumber>::default();
@@ -125,6 +132,57 @@ benchmarks! {
 	verify {
 		let next_session = crate::shared::Pallet::<T>::session_index().saturating_add(One::one());
 		assert_last_event::<T>(Event::ActionQueued(para_id, next_session).into());
+	}
+
+	add_trusted_validation_code {
+		let c in 1 .. MAX_CODE_SIZE;
+		let new_code = ValidationCode(vec![0; c as usize]);
+	}: _(RawOrigin::Root, new_code)
+
+	poke_unused_validation_code {
+		let code_hash = [0; 32].into();
+	}: _(RawOrigin::Root, code_hash)
+
+	include_pvf_check_statement {
+		let (stmt, signature) = pvf_check::prepare_inclusion_bench::<T>();
+	}: {
+		let _ = Pallet::<T>::include_pvf_check_statement(RawOrigin::None.into(), stmt, signature);
+	}
+
+	include_pvf_check_statement_finalize_upgrade_accept {
+		let (stmt, signature) = pvf_check::prepare_finalization_bench::<T>(
+			VoteCause::Upgrade,
+			VoteOutcome::Accept,
+		);
+	}: {
+		let _ = Pallet::<T>::include_pvf_check_statement(RawOrigin::None.into(), stmt, signature);
+	}
+
+	include_pvf_check_statement_finalize_upgrade_reject {
+		let (stmt, signature) = pvf_check::prepare_finalization_bench::<T>(
+			VoteCause::Upgrade,
+			VoteOutcome::Reject,
+		);
+	}: {
+		let _ = Pallet::<T>::include_pvf_check_statement(RawOrigin::None.into(), stmt, signature);
+	}
+
+	include_pvf_check_statement_finalize_onboarding_accept {
+		let (stmt, signature) = pvf_check::prepare_finalization_bench::<T>(
+			VoteCause::Onboarding,
+			VoteOutcome::Accept,
+		);
+	}: {
+		let _ = Pallet::<T>::include_pvf_check_statement(RawOrigin::None.into(), stmt, signature);
+	}
+
+	include_pvf_check_statement_finalize_onboarding_reject {
+		let (stmt, signature) = pvf_check::prepare_finalization_bench::<T>(
+			VoteCause::Onboarding,
+			VoteOutcome::Reject,
+		);
+	}: {
+		let _ = Pallet::<T>::include_pvf_check_statement(RawOrigin::None.into(), stmt, signature);
 	}
 
 	impl_benchmark_test_suite!(

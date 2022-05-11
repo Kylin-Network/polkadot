@@ -33,6 +33,7 @@ use std::{
 use sp_keystore::SyncCryptoStorePtr;
 
 use polkadot_node_network_protocol::{
+	self as net_protocol,
 	peer_set::PeerSet,
 	request_response as req_res,
 	request_response::{
@@ -40,11 +41,11 @@ use polkadot_node_network_protocol::{
 		v1::{CollationFetchingRequest, CollationFetchingResponse},
 		OutgoingRequest, Requests,
 	},
-	v1 as protocol_v1, OurView, PeerId, UnifiedReputationChange as Rep, View,
+	v1 as protocol_v1, OurView, PeerId, UnifiedReputationChange as Rep, Versioned, View,
 };
 use polkadot_node_primitives::{PoV, SignedFullStatement};
 use polkadot_node_subsystem_util::metrics::{self, prometheus};
-use polkadot_primitives::v1::{CandidateReceipt, CollatorId, Hash, Id as ParaId};
+use polkadot_primitives::v2::{CandidateReceipt, CollatorId, Hash, Id as ParaId};
 use polkadot_subsystem::{
 	jaeger,
 	messages::{
@@ -54,9 +55,9 @@ use polkadot_subsystem::{
 	overseer, FromOverseer, OverseerSignal, PerLeafSpan, SubsystemContext, SubsystemSender,
 };
 
-use crate::error::FatalResult;
+use crate::error::Result;
 
-use super::{modify_reputation, Result, LOG_TARGET};
+use super::{modify_reputation, LOG_TARGET};
 
 #[cfg(test)]
 mod tests;
@@ -66,7 +67,6 @@ const COST_UNEXPECTED_MESSAGE: Rep = Rep::CostMinor("An unexpected message");
 const COST_CORRUPTED_MESSAGE: Rep = Rep::CostMinor("Message was corrupt");
 /// Network errors that originated at the remote host should have same cost as timeout.
 const COST_NETWORK_ERROR: Rep = Rep::CostMinor("Some network error");
-const COST_REQUEST_TIMED_OUT: Rep = Rep::CostMinor("A collation request has timed out");
 const COST_INVALID_SIGNATURE: Rep = Rep::Malicious("Invalid network message signature");
 const COST_REPORT_BAD: Rep = Rep::Malicious("A collator was reported by another subsystem");
 const COST_WRONG_PARA: Rep = Rep::Malicious("A collator provided a collation for the wrong para");
@@ -132,6 +132,13 @@ impl Metrics {
 			.as_ref()
 			.map(|metrics| metrics.collator_peer_count.set(collator_peers as u64));
 	}
+
+	/// Provide a timer for `PerRequest` structure which observes on drop.
+	fn time_collation_request_duration(
+		&self,
+	) -> Option<metrics::prometheus::prometheus::HistogramTimer> {
+		self.0.as_ref().map(|metrics| metrics.collation_request_duration.start_timer())
+	}
 }
 
 #[derive(Clone)]
@@ -140,6 +147,7 @@ struct MetricsInner {
 	process_msg: prometheus::Histogram,
 	handle_collation_request_result: prometheus::Histogram,
 	collator_peer_count: prometheus::Gauge<prometheus::U64>,
+	collation_request_duration: prometheus::Histogram,
 }
 
 impl metrics::Metrics for Metrics {
@@ -150,7 +158,7 @@ impl metrics::Metrics for Metrics {
 			collation_requests: prometheus::register(
 				prometheus::CounterVec::new(
 					prometheus::Opts::new(
-						"parachain_collation_requests_total",
+						"polkadot_parachain_collation_requests_total",
 						"Number of collations requested from Collators.",
 					),
 					&["success"],
@@ -160,7 +168,7 @@ impl metrics::Metrics for Metrics {
 			process_msg: prometheus::register(
 				prometheus::Histogram::with_opts(
 					prometheus::HistogramOpts::new(
-						"parachain_collator_protocol_validator_process_msg",
+						"polkadot_parachain_collator_protocol_validator_process_msg",
 						"Time spent within `collator_protocol_validator::process_msg`",
 					)
 				)?,
@@ -169,7 +177,7 @@ impl metrics::Metrics for Metrics {
 			handle_collation_request_result: prometheus::register(
 				prometheus::Histogram::with_opts(
 					prometheus::HistogramOpts::new(
-						"parachain_collator_protocol_validator_handle_collation_request_result",
+						"polkadot_parachain_collator_protocol_validator_handle_collation_request_result",
 						"Time spent within `collator_protocol_validator::handle_collation_request_result`",
 					)
 				)?,
@@ -177,8 +185,17 @@ impl metrics::Metrics for Metrics {
 			)?,
 			collator_peer_count: prometheus::register(
 				prometheus::Gauge::new(
-					"parachain_collator_peer_count",
+					"polkadot_parachain_collator_peer_count",
 					"Amount of collator peers connected",
+				)?,
+				registry,
+			)?,
+			collation_request_duration: prometheus::register(
+				prometheus::Histogram::with_opts(
+					prometheus::HistogramOpts::new(
+						"polkadot_parachain_collator_protocol_validator_collation_request_duration",
+						"Lifetime of the `PerRequest` structure",
+					).buckets(vec![0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0, 1.2, 1.5, 1.75]),
 				)?,
 				registry,
 			)?,
@@ -195,6 +212,8 @@ struct PerRequest {
 	to_requester: oneshot::Sender<(CandidateReceipt, PoV)>,
 	/// A jaeger span corresponding to the lifetime of the request.
 	span: Option<jaeger::Span>,
+	/// A metric histogram for the lifetime of the request
+	_lifetime_timer: Option<metrics::prometheus::prometheus::HistogramTimer>,
 }
 
 #[derive(Debug)]
@@ -372,7 +391,7 @@ impl ActiveParas {
 			let (validators, groups, rotation_info, cores) = match (mv, mg, mc) {
 				(Some(v), Some((g, r)), Some(c)) => (v, g, r, c),
 				_ => {
-					tracing::debug!(
+					gum::debug!(
 						target: LOG_TARGET,
 						?relay_parent,
 						"Failed to query runtime API for relay-parent",
@@ -394,7 +413,7 @@ impl ActiveParas {
 						cores.get(core_now.0 as usize).and_then(|c| c.para_id())
 					},
 					None => {
-						tracing::trace!(target: LOG_TARGET, ?relay_parent, "Not a validator");
+						gum::trace!(target: LOG_TARGET, ?relay_parent, "Not a validator");
 
 						continue
 					},
@@ -412,7 +431,7 @@ impl ActiveParas {
 				let entry = self.current_assignments.entry(para_now).or_default();
 				*entry += 1;
 				if *entry == 1 {
-					tracing::debug!(
+					gum::debug!(
 						target: LOG_TARGET,
 						?relay_parent,
 						para_id = ?para_now,
@@ -436,7 +455,7 @@ impl ActiveParas {
 						*occupied.get_mut() -= 1;
 						if *occupied.get() == 0 {
 							occupied.remove_entry();
-							tracing::debug!(
+							gum::debug!(
 								target: LOG_TARGET,
 								para_id = ?cur,
 								"Unassigned from a parachain",
@@ -529,12 +548,12 @@ impl CollationsPerRelayParent {
 	/// the passed in `finished_one` is the currently `waiting_collation`.
 	pub fn get_next_collation_to_fetch(
 		&mut self,
-		finished_one: Option<CollatorId>,
+		finished_one: Option<&CollatorId>,
 	) -> Option<(PendingCollation, CollatorId)> {
 		// If finished one does not match waiting_collation, then we already dequeued another fetch
 		// to replace it.
-		if self.waiting_collation != finished_one {
-			tracing::trace!(
+		if self.waiting_collation.as_ref() != finished_one {
+			gum::trace!(
 				target: LOG_TARGET,
 				waiting_collation = ?self.waiting_collation,
 				?finished_one,
@@ -642,8 +661,26 @@ async fn fetch_collation<Context>(
 		.collation_fetch_timeouts
 		.push(timeout(id.clone(), relay_parent.clone()).boxed());
 
-	if state.peer_data.get(&peer_id).map_or(false, |d| d.has_advertised(&relay_parent)) {
-		request_collation(ctx, state, relay_parent, para_id, peer_id, tx).await;
+	if let Some(peer_data) = state.peer_data.get(&peer_id) {
+		if peer_data.has_advertised(&relay_parent) {
+			request_collation(ctx, state, relay_parent, para_id, peer_id, tx).await;
+		} else {
+			gum::debug!(
+				target: LOG_TARGET,
+				?peer_id,
+				?para_id,
+				?relay_parent,
+				"Collation is not advertised for the relay parent by the peer, do not request it",
+			);
+		}
+	} else {
+		gum::warn!(
+			target: LOG_TARGET,
+			?peer_id,
+			?para_id,
+			?relay_parent,
+			"Requested to fetch a collation from an unknown peer",
+		);
 	}
 
 	state.collation_fetches.push(rx.map(|r| ((id, pc), r)).boxed());
@@ -690,7 +727,7 @@ async fn notify_collation_seconded<Context>(
 		protocol_v1::CollatorProtocolMessage::CollationSeconded(relay_parent, statement.into());
 	ctx.send_message(NetworkBridgeMessage::SendCollationMessage(
 		vec![peer_id],
-		protocol_v1::CollationProtocol::CollatorProtocol(wire_message),
+		Versioned::V1(protocol_v1::CollationProtocol::CollatorProtocol(wire_message)),
 	))
 	.await;
 
@@ -729,7 +766,7 @@ async fn request_collation<Context>(
 	Context: SubsystemContext<Message = CollatorProtocolMessage>,
 {
 	if !state.view.contains(&relay_parent) {
-		tracing::debug!(
+		gum::debug!(
 			target: LOG_TARGET,
 			peer_id = %peer_id,
 			para_id = %para_id,
@@ -740,7 +777,7 @@ async fn request_collation<Context>(
 	}
 	let pending_collation = PendingCollation::new(relay_parent, &para_id, &peer_id);
 	if state.requested_collations.contains_key(&pending_collation) {
-		tracing::warn!(
+		gum::warn!(
 			target: LOG_TARGET,
 			peer_id = %pending_collation.peer_id,
 			%pending_collation.para_id,
@@ -754,7 +791,7 @@ async fn request_collation<Context>(
 		Recipient::Peer(peer_id),
 		CollationFetchingRequest { relay_parent, para_id },
 	);
-	let requests = Requests::CollationFetching(full_request);
+	let requests = Requests::CollationFetchingV1(full_request);
 
 	let per_request = PerRequest {
 		from_collator: response_recv.boxed().fuse(),
@@ -763,13 +800,14 @@ async fn request_collation<Context>(
 			.span_per_relay_parent
 			.get(&relay_parent)
 			.map(|s| s.child("collation-request").with_para_id(para_id)),
+		_lifetime_timer: state.metrics.time_collation_request_duration(),
 	};
 
 	state
 		.requested_collations
 		.insert(PendingCollation::new(relay_parent, &para_id, &peer_id), per_request);
 
-	tracing::debug!(
+	gum::debug!(
 		target: LOG_TARGET,
 		peer_id = %peer_id,
 		%para_id,
@@ -806,23 +844,41 @@ async fn process_incoming_peer_message<Context>(
 			let peer_data = match state.peer_data.get_mut(&origin) {
 				Some(p) => p,
 				None => {
+					gum::debug!(
+						target: LOG_TARGET,
+						peer_id = ?origin,
+						?para_id,
+						"Unknown peer",
+					);
 					modify_reputation(ctx, origin, COST_UNEXPECTED_MESSAGE).await;
 					return
 				},
 			};
 
 			if peer_data.is_collating() {
+				gum::debug!(
+					target: LOG_TARGET,
+					peer_id = ?origin,
+					?para_id,
+					"Peer is not in the collating state",
+				);
 				modify_reputation(ctx, origin, COST_UNEXPECTED_MESSAGE).await;
 				return
 			}
 
 			if !signature.verify(&*protocol_v1::declare_signature_payload(&origin), &collator_id) {
+				gum::debug!(
+					target: LOG_TARGET,
+					peer_id = ?origin,
+					?para_id,
+					"Signature verification failure",
+				);
 				modify_reputation(ctx, origin, COST_INVALID_SIGNATURE).await;
 				return
 			}
 
 			if state.active_paras.is_current(&para_id) {
-				tracing::debug!(
+				gum::debug!(
 					target: LOG_TARGET,
 					peer_id = ?origin,
 					?collator_id,
@@ -832,7 +888,7 @@ async fn process_incoming_peer_message<Context>(
 
 				peer_data.set_collating(collator_id, para_id);
 			} else {
-				tracing::debug!(
+				gum::debug!(
 					target: LOG_TARGET,
 					peer_id = ?origin,
 					?collator_id,
@@ -841,7 +897,7 @@ async fn process_incoming_peer_message<Context>(
 				);
 
 				modify_reputation(ctx, origin.clone(), COST_UNNEEDED_COLLATOR).await;
-				tracing::trace!(target: LOG_TARGET, "Disconnecting unneeded collator");
+				gum::trace!(target: LOG_TARGET, "Disconnecting unneeded collator");
 				disconnect_peer(ctx, origin).await;
 			}
 		},
@@ -851,7 +907,7 @@ async fn process_incoming_peer_message<Context>(
 				.get(&relay_parent)
 				.map(|s| s.child("advertise-collation"));
 			if !state.view.contains(&relay_parent) {
-				tracing::debug!(
+				gum::debug!(
 					target: LOG_TARGET,
 					peer_id = ?origin,
 					?relay_parent,
@@ -864,6 +920,12 @@ async fn process_incoming_peer_message<Context>(
 
 			let peer_data = match state.peer_data.get_mut(&origin) {
 				None => {
+					gum::debug!(
+						target: LOG_TARGET,
+						peer_id = ?origin,
+						?relay_parent,
+						"Advertise collation message has been received from an unknown peer",
+					);
 					modify_reputation(ctx, origin, COST_UNEXPECTED_MESSAGE).await;
 					return
 				},
@@ -872,7 +934,7 @@ async fn process_incoming_peer_message<Context>(
 
 			match peer_data.insert_advertisement(relay_parent, &state.view) {
 				Ok((id, para_id)) => {
-					tracing::debug!(
+					gum::debug!(
 						target: LOG_TARGET,
 						peer_id = ?origin,
 						%para_id,
@@ -886,19 +948,35 @@ async fn process_incoming_peer_message<Context>(
 						state.collations_per_relay_parent.entry(relay_parent).or_default();
 
 					match collations.status {
-						CollationStatus::Fetching | CollationStatus::WaitingOnValidation =>
-							collations.unfetched_collations.push((pending_collation, id)),
+						CollationStatus::Fetching | CollationStatus::WaitingOnValidation => {
+							gum::trace!(
+								target: LOG_TARGET,
+								peer_id = ?origin,
+								%para_id,
+								?relay_parent,
+								"Added collation to the pending list"
+							);
+							collations.unfetched_collations.push((pending_collation, id));
+						},
 						CollationStatus::Waiting => {
 							collations.status = CollationStatus::Fetching;
 							collations.waiting_collation = Some(id.clone());
 
 							fetch_collation(ctx, state, pending_collation.clone(), id).await;
 						},
-						CollationStatus::Seconded => {},
+						CollationStatus::Seconded => {
+							gum::trace!(
+								target: LOG_TARGET,
+								peer_id = ?origin,
+								%para_id,
+								?relay_parent,
+								"Valid seconded collation"
+							);
+						},
 					}
 				},
 				Err(error) => {
-					tracing::debug!(
+					gum::debug!(
 						target: LOG_TARGET,
 						peer_id = ?origin,
 						?relay_parent,
@@ -911,7 +989,7 @@ async fn process_incoming_peer_message<Context>(
 			}
 		},
 		CollationSeconded(_, _) => {
-			tracing::warn!(
+			gum::warn!(
 				target: LOG_TARGET,
 				peer_id = ?origin,
 				"Unexpected `CollationSeconded` message, decreasing reputation",
@@ -977,7 +1055,12 @@ where
 		// declare.
 		if let Some(para_id) = peer_data.collating_para() {
 			if !state.active_paras.is_current(&para_id) {
-				tracing::trace!(target: LOG_TARGET, "Disconnecting peer on view change");
+				gum::trace!(
+					target: LOG_TARGET,
+					?peer_id,
+					?para_id,
+					"Disconnecting peer on view change (not current parachain id)"
+				);
 				disconnect_peer(ctx, peer_id.clone()).await;
 			}
 		}
@@ -991,7 +1074,7 @@ async fn handle_network_msg<Context>(
 	ctx: &mut Context,
 	state: &mut State,
 	keystore: &SyncCryptoStorePtr,
-	bridge_message: NetworkBridgeEvent<protocol_v1::CollatorProtocolMessage>,
+	bridge_message: NetworkBridgeEvent<net_protocol::CollatorProtocolMessage>,
 ) -> Result<()>
 where
 	Context: overseer::SubsystemContext<Message = CollatorProtocolMessage>,
@@ -1000,7 +1083,7 @@ where
 	use NetworkBridgeEvent::*;
 
 	match bridge_message {
-		PeerConnected(peer_id, _role, _) => {
+		PeerConnected(peer_id, _role, _version, _) => {
 			state.peer_data.entry(peer_id).or_default();
 			state.metrics.note_collator_peer_count(state.peer_data.len());
 		},
@@ -1008,8 +1091,8 @@ where
 			state.peer_data.remove(&peer_id);
 			state.metrics.note_collator_peer_count(state.peer_data.len());
 		},
-		NewGossipTopology(..) => {
-			// impossibru!
+		NewGossipTopology { .. } => {
+			// impossible!
 		},
 		PeerViewChange(peer_id, view) => {
 			handle_peer_view_change(state, peer_id, view).await?;
@@ -1017,7 +1100,7 @@ where
 		OurViewChange(view) => {
 			handle_our_view_change(ctx, state, keystore, view).await?;
 		},
-		PeerMessage(remote, msg) => {
+		PeerMessage(remote, Versioned::V1(msg)) => {
 			process_incoming_peer_message(ctx, state, remote, msg).await;
 		},
 	}
@@ -1041,14 +1124,14 @@ async fn process_msg<Context>(
 
 	match msg {
 		CollateOn(id) => {
-			tracing::warn!(
+			gum::warn!(
 				target: LOG_TARGET,
 				para_id = %id,
 				"CollateOn message is not expected on the validator side of the protocol",
 			);
 		},
 		DistributeCollation(_, _, _) => {
-			tracing::warn!(
+			gum::warn!(
 				target: LOG_TARGET,
 				"DistributeCollation message is not expected on the validator side of the protocol",
 			);
@@ -1056,9 +1139,9 @@ async fn process_msg<Context>(
 		ReportCollator(id) => {
 			report_collator(ctx, &state.peer_data, id).await;
 		},
-		NetworkBridgeUpdateV1(event) => {
+		NetworkBridgeUpdate(event) => {
 			if let Err(e) = handle_network_msg(ctx, state, keystore, event).await {
-				tracing::warn!(
+				gum::warn!(
 					target: LOG_TARGET,
 					err = ?e,
 					"Failed to handle incoming network message",
@@ -1076,7 +1159,7 @@ async fn process_msg<Context>(
 					collations.status = CollationStatus::Seconded;
 				}
 			} else {
-				tracing::debug!(
+				gum::debug!(
 					target: LOG_TARGET,
 					relay_parent = ?parent,
 					"Collation has been seconded, but the relay parent is deactivated",
@@ -1090,7 +1173,7 @@ async fn process_msg<Context>(
 						Some(candidate_receipt.commitments_hash) =>
 					entry.remove().0,
 				Entry::Occupied(_) => {
-					tracing::error!(
+					gum::error!(
 						target: LOG_TARGET,
 						relay_parent = ?parent,
 						candidate = ?candidate_receipt.hash(),
@@ -1133,7 +1216,7 @@ pub(crate) async fn run<Context>(
 	keystore: SyncCryptoStorePtr,
 	eviction_policy: crate::CollatorEvictionPolicy,
 	metrics: Metrics,
-) -> FatalResult<()>
+) -> std::result::Result<(), crate::error::FatalError>
 where
 	Context: overseer::SubsystemContext<Message = CollatorProtocolMessage>,
 	Context: SubsystemContext<Message = CollatorProtocolMessage>,
@@ -1151,7 +1234,7 @@ where
 			res = ctx.recv().fuse() => {
 				match res {
 					Ok(FromOverseer::Communication { msg }) => {
-						tracing::trace!(target: LOG_TARGET, msg = ?msg, "received a message");
+						gum::trace!(target: LOG_TARGET, msg = ?msg, "received a message");
 						process_msg(
 							&mut ctx,
 							&keystore,
@@ -1171,7 +1254,7 @@ where
 			}
 			res = state.collation_fetch_timeouts.select_next_some() => {
 				let (collator_id, relay_parent) = res;
-				tracing::debug!(
+				gum::debug!(
 					target: LOG_TARGET,
 					?relay_parent,
 					?collator_id,
@@ -1212,7 +1295,7 @@ async fn poll_requests(
 		if !result.is_ready() {
 			retained_requested.insert(pending_collation.clone());
 		}
-		if let CollationFetchResult::Error(rep) = result {
+		if let CollationFetchResult::Error(Some(rep)) = result {
 			reputation_changes.push((pending_collation.peer_id.clone(), rep));
 		}
 	}
@@ -1232,15 +1315,22 @@ async fn dequeue_next_collation_and_fetch(
 	if let Some((next, id)) = state
 		.collations_per_relay_parent
 		.get_mut(&relay_parent)
-		.and_then(|c| c.get_next_collation_to_fetch(Some(previous_fetch)))
+		.and_then(|c| c.get_next_collation_to_fetch(Some(&previous_fetch)))
 	{
-		tracing::debug!(
+		gum::debug!(
 			target: LOG_TARGET,
 			?relay_parent,
 			?id,
 			"Successfully dequeued next advertisement - fetching ..."
 		);
 		fetch_collation(ctx, state, next, id).await;
+	} else {
+		gum::debug!(
+			target: LOG_TARGET,
+			?relay_parent,
+			previous_collator = ?previous_fetch,
+			"No collations are available to fetch"
+		);
 	}
 }
 
@@ -1254,14 +1344,14 @@ async fn handle_collation_fetched_result<Context>(
 	Context: SubsystemContext<Message = CollatorProtocolMessage>,
 {
 	// If no prior collation for this relay parent has been seconded, then
-	// memoize the collation_event for that relay_parent, such that we may
+	// memorize the `collation_event` for that `relay_parent`, such that we may
 	// notify the collator of their successful second backing
 	let relay_parent = collation_event.1.relay_parent;
 
 	let (candidate_receipt, pov) = match res {
 		Ok(res) => res,
 		Err(e) => {
-			tracing::debug!(
+			gum::debug!(
 				target: LOG_TARGET,
 				relay_parent = ?collation_event.1.relay_parent,
 				para_id = ?collation_event.1.para_id,
@@ -1278,7 +1368,7 @@ async fn handle_collation_fetched_result<Context>(
 
 	if let Some(collations) = state.collations_per_relay_parent.get_mut(&relay_parent) {
 		if let CollationStatus::Seconded = collations.status {
-			tracing::debug!(
+			gum::debug!(
 				target: LOG_TARGET,
 				?relay_parent,
 				"Already seconded - no longer interested in collation fetch result."
@@ -1299,7 +1389,7 @@ async fn handle_collation_fetched_result<Context>(
 
 		entry.insert(collation_event);
 	} else {
-		tracing::trace!(
+		gum::trace!(
 			target: LOG_TARGET,
 			?relay_parent,
 			candidate = ?candidate_receipt.hash(),
@@ -1321,7 +1411,7 @@ async fn disconnect_inactive_peers<Context>(
 {
 	for (peer, peer_data) in peers {
 		if peer_data.is_inactive(&eviction_policy) {
-			tracing::trace!(target: LOG_TARGET, "Disconnecting inactive peer");
+			gum::trace!(target: LOG_TARGET, "Disconnecting inactive peer");
 			disconnect_peer(ctx, peer.clone()).await;
 		}
 	}
@@ -1333,8 +1423,8 @@ enum CollationFetchResult {
 	/// The collation was fetched successfully.
 	Success,
 	/// An error occurred when fetching a collation or it was invalid.
-	/// A reputation change should be applied to the peer.
-	Error(Rep),
+	/// A given reputation change should be applied to the peer.
+	Error(Option<Rep>),
 }
 
 impl CollationFetchResult {
@@ -1354,7 +1444,7 @@ async fn poll_collation_response(
 	per_req: &mut PerRequest,
 ) -> CollationFetchResult {
 	if never!(per_req.from_collator.is_terminated()) {
-		tracing::error!(
+		gum::error!(
 			target: LOG_TARGET,
 			"We remove pending responses once received, this should not happen."
 		);
@@ -1372,7 +1462,7 @@ async fn poll_collation_response(
 
 		let result = match response {
 			Err(RequestError::InvalidResponse(err)) => {
-				tracing::warn!(
+				gum::warn!(
 					target: LOG_TARGET,
 					hash = ?pending_collation.relay_parent,
 					para_id = ?pending_collation.para_id,
@@ -1380,10 +1470,22 @@ async fn poll_collation_response(
 					err = ?err,
 					"Collator provided response that could not be decoded"
 				);
-				CollationFetchResult::Error(COST_CORRUPTED_MESSAGE)
+				CollationFetchResult::Error(Some(COST_CORRUPTED_MESSAGE))
+			},
+			Err(err) if err.is_timed_out() => {
+				gum::debug!(
+					target: LOG_TARGET,
+					hash = ?pending_collation.relay_parent,
+					para_id = ?pending_collation.para_id,
+					peer_id = ?pending_collation.peer_id,
+					"Request timed out"
+				);
+				// For now we don't want to change reputation on timeout, to mitigate issues like
+				// this: https://github.com/paritytech/polkadot/issues/4617
+				CollationFetchResult::Error(None)
 			},
 			Err(RequestError::NetworkError(err)) => {
-				tracing::debug!(
+				gum::debug!(
 					target: LOG_TARGET,
 					hash = ?pending_collation.relay_parent,
 					para_id = ?pending_collation.para_id,
@@ -1395,26 +1497,23 @@ async fn poll_collation_response(
 				// sensible. In theory this could be exploited, by DoSing this node,
 				// which would result in reduced reputation for proper nodes, but the
 				// same can happen for penalties on timeouts, which we also have.
-				CollationFetchResult::Error(COST_NETWORK_ERROR)
+				CollationFetchResult::Error(Some(COST_NETWORK_ERROR))
 			},
-			Err(RequestError::Canceled(_)) => {
-				tracing::debug!(
+			Err(RequestError::Canceled(err)) => {
+				gum::debug!(
 					target: LOG_TARGET,
 					hash = ?pending_collation.relay_parent,
 					para_id = ?pending_collation.para_id,
 					peer_id = ?pending_collation.peer_id,
-					"Request timed out"
+					err = ?err,
+					"Canceled should be handled by `is_timed_out` above - this is a bug!"
 				);
-				// A minor decrease in reputation for any network failure seems
-				// sensible. In theory this could be exploited, by DoSing this node,
-				// which would result in reduced reputation for proper nodes, but the
-				// same can happen for penalties on timeouts, which we also have.
-				CollationFetchResult::Error(COST_REQUEST_TIMED_OUT)
+				CollationFetchResult::Error(None)
 			},
 			Ok(CollationFetchingResponse::Collation(receipt, _))
 				if receipt.descriptor().para_id != pending_collation.para_id =>
 			{
-				tracing::debug!(
+				gum::debug!(
 					target: LOG_TARGET,
 					expected_para_id = ?pending_collation.para_id,
 					got_para_id = ?receipt.descriptor().para_id,
@@ -1422,10 +1521,10 @@ async fn poll_collation_response(
 					"Got wrong para ID for requested collation."
 				);
 
-				CollationFetchResult::Error(COST_WRONG_PARA)
+				CollationFetchResult::Error(Some(COST_WRONG_PARA))
 			},
 			Ok(CollationFetchingResponse::Collation(receipt, pov)) => {
-				tracing::debug!(
+				gum::debug!(
 					target: LOG_TARGET,
 					para_id = %pending_collation.para_id,
 					hash = ?pending_collation.relay_parent,
@@ -1439,7 +1538,7 @@ async fn poll_collation_response(
 				let result = tx.send((receipt, pov));
 
 				if let Err(_) = result {
-					tracing::warn!(
+					gum::warn!(
 						target: LOG_TARGET,
 						hash = ?pending_collation.relay_parent,
 						para_id = ?pending_collation.para_id,

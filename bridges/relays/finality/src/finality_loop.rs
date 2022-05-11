@@ -19,17 +19,17 @@
 //! is the mandatory headers, which we always submit to the target node. For such headers, we
 //! assume that the persistent proof either exists, or will eventually become available.
 
-use crate::{FinalityProof, FinalitySyncPipeline, SourceHeader};
+use crate::{
+	sync_loop_metrics::SyncLoopMetrics, FinalityProof, FinalitySyncPipeline, SourceHeader,
+};
 
 use async_trait::async_trait;
 use backoff::backoff::Backoff;
 use futures::{select, Future, FutureExt, Stream, StreamExt};
-use headers_relay::sync_loop_metrics::SyncLoopMetrics;
 use num_traits::{One, Saturating};
 use relay_utils::{
-	metrics::{GlobalMetrics, MetricsParams},
-	relay_loop::Client as RelayClient,
-	retry_backoff, FailedClient, MaybeConnectionError,
+	metrics::MetricsParams, relay_loop::Client as RelayClient, retry_backoff, FailedClient,
+	HeaderId, MaybeConnectionError,
 };
 use std::{
 	pin::Pin,
@@ -43,18 +43,19 @@ pub struct FinalitySyncParams {
 	/// `min(source_block_time, target_block_time)`.
 	///
 	/// This parameter may be used to limit transactions rate. Increase the value && you'll get
-	/// infrequent updates => sparse headers => potential slow down of bridge applications, but pallet storage
-	/// won't be super large. Decrease the value to near `source_block_time` and you'll get
-	/// transaction for (almost) every block of the source chain => all source headers will be known
-	/// to the target chain => bridge applications will run faster, but pallet storage may explode
-	/// (but if pruning is there, then it's fine).
+	/// infrequent updates => sparse headers => potential slow down of bridge applications, but
+	/// pallet storage won't be super large. Decrease the value to near `source_block_time` and
+	/// you'll get transaction for (almost) every block of the source chain => all source headers
+	/// will be known to the target chain => bridge applications will run faster, but pallet
+	/// storage may explode (but if pruning is there, then it's fine).
 	pub tick: Duration,
-	/// Number of finality proofs to keep in internal buffer between loop wakeups.
+	/// Number of finality proofs to keep in internal buffer between loop iterations.
 	///
-	/// While in "major syncing" state, we still read finality proofs from the stream. They're stored
-	/// in the internal buffer between loop wakeups. When we're close to the tip of the chain, we may
-	/// meet finality delays if headers are not finalized frequently. So instead of waiting for next
-	/// finality proof to appear in the stream, we may use existing proof from that buffer.
+	/// While in "major syncing" state, we still read finality proofs from the stream. They're
+	/// stored in the internal buffer between loop iterations. When we're close to the tip of the
+	/// chain, we may meet finality delays if headers are not finalized frequently. So instead of
+	/// waiting for next finality proof to appear in the stream, we may use existing proof from
+	/// that buffer.
 	pub recent_finality_proofs_limit: usize,
 	/// Timeout before we treat our transactions as lost and restart the whole sync process.
 	pub stall_timeout: Duration,
@@ -86,13 +87,20 @@ pub trait SourceClient<P: FinalitySyncPipeline>: RelayClient {
 #[async_trait]
 pub trait TargetClient<P: FinalitySyncPipeline>: RelayClient {
 	/// Get best finalized source block number.
-	async fn best_finalized_source_block_number(&self) -> Result<P::Number, Self::Error>;
+	async fn best_finalized_source_block_id(
+		&self,
+	) -> Result<HeaderId<P::Hash, P::Number>, Self::Error>;
 
 	/// Submit header finality proof.
-	async fn submit_finality_proof(&self, header: P::Header, proof: P::FinalityProof) -> Result<(), Self::Error>;
+	async fn submit_finality_proof(
+		&self,
+		header: P::Header,
+		proof: P::FinalityProof,
+	) -> Result<(), Self::Error>;
 }
 
-/// Return prefix that will be used by default to expose Prometheus metrics of the finality proofs sync loop.
+/// Return prefix that will be used by default to expose Prometheus metrics of the finality proofs
+/// sync loop.
 pub fn metrics_prefix<P: FinalitySyncPipeline>() -> String {
 	format!("{}_to_{}_Sync", P::SOURCE_NAME, P::TARGET_NAME)
 }
@@ -104,12 +112,15 @@ pub async fn run<P: FinalitySyncPipeline>(
 	sync_params: FinalitySyncParams,
 	metrics_params: MetricsParams,
 	exit_signal: impl Future<Output = ()> + 'static + Send,
-) -> Result<(), String> {
+) -> Result<(), relay_utils::Error> {
 	let exit_signal = exit_signal.shared();
 	relay_utils::relay_loop(source_client, target_client)
-		.with_metrics(Some(metrics_prefix::<P>()), metrics_params)
-		.loop_metric(|registry, prefix| SyncLoopMetrics::new(registry, prefix))?
-		.standalone_metric(|registry, prefix| GlobalMetrics::new(registry, prefix))?
+		.with_metrics(metrics_params)
+		.loop_metric(SyncLoopMetrics::new(
+			Some(&metrics_prefix::<P>()),
+			"source",
+			"source_at_target",
+		)?)?
 		.expose()
 		.await?
 		.run(metrics_prefix::<P>(), move |source_client, target_client, metrics| {
@@ -127,15 +138,11 @@ pub async fn run<P: FinalitySyncPipeline>(
 /// Unjustified headers container. Ordered by header number.
 pub(crate) type UnjustifiedHeaders<H> = Vec<H>;
 /// Finality proofs container. Ordered by target header number.
-pub(crate) type FinalityProofs<P> = Vec<(
-	<P as FinalitySyncPipeline>::Number,
-	<P as FinalitySyncPipeline>::FinalityProof,
-)>;
+pub(crate) type FinalityProofs<P> =
+	Vec<(<P as FinalitySyncPipeline>::Number, <P as FinalitySyncPipeline>::FinalityProof)>;
 /// Reference to finality proofs container.
-pub(crate) type FinalityProofsRef<'a, P> = &'a [(
-	<P as FinalitySyncPipeline>::Number,
-	<P as FinalitySyncPipeline>::FinalityProof,
-)];
+pub(crate) type FinalityProofsRef<'a, P> =
+	&'a [(<P as FinalitySyncPipeline>::Number, <P as FinalitySyncPipeline>::FinalityProof)];
 
 /// Error that may happen inside finality synchronization loop.
 #[derive(Debug)]
@@ -168,7 +175,7 @@ where
 
 /// Information about transaction that we have submitted.
 #[derive(Debug, Clone)]
-struct Transaction<Number> {
+pub(crate) struct Transaction<Number> {
 	/// Time when we have submitted this transaction.
 	pub time: Instant,
 	/// The number of the header we have submitted.
@@ -180,29 +187,27 @@ pub(crate) struct RestartableFinalityProofsStream<S> {
 	/// Flag that the stream needs to be restarted.
 	pub(crate) needs_restart: bool,
 	/// The stream itself.
-	stream: Pin<Box<S>>,
+	pub(crate) stream: Pin<Box<S>>,
 }
 
 #[cfg(test)]
 impl<S> From<S> for RestartableFinalityProofsStream<S> {
 	fn from(stream: S) -> Self {
-		RestartableFinalityProofsStream {
-			needs_restart: false,
-			stream: Box::pin(stream),
-		}
+		RestartableFinalityProofsStream { needs_restart: false, stream: Box::pin(stream) }
 	}
 }
 
 /// Finality synchronization loop state.
-struct FinalityLoopState<'a, P: FinalitySyncPipeline, FinalityProofsStream> {
+pub(crate) struct FinalityLoopState<'a, P: FinalitySyncPipeline, FinalityProofsStream> {
 	/// Synchronization loop progress.
-	progress: &'a mut (Instant, Option<P::Number>),
+	pub(crate) progress: &'a mut (Instant, Option<P::Number>),
 	/// Finality proofs stream.
-	finality_proofs_stream: &'a mut RestartableFinalityProofsStream<FinalityProofsStream>,
+	pub(crate) finality_proofs_stream:
+		&'a mut RestartableFinalityProofsStream<FinalityProofsStream>,
 	/// Recent finality proofs that we have read from the stream.
-	recent_finality_proofs: &'a mut FinalityProofs<P>,
+	pub(crate) recent_finality_proofs: &'a mut FinalityProofs<P>,
 	/// Last transaction that we have submitted to the target node.
-	last_transaction: Option<Transaction<P::Number>>,
+	pub(crate) last_transaction: Option<Transaction<P::Number>>,
 }
 
 async fn run_until_connection_lost<P: FinalitySyncPipeline>(
@@ -260,14 +265,12 @@ async fn run_until_connection_lost<P: FinalitySyncPipeline>(
 				last_transaction = updated_last_transaction;
 				retry_backoff.reset();
 				sync_params.tick
-			}
+			},
 			Err(error) => {
 				log::error!(target: "bridge", "Finality sync loop iteration has failed with error: {:?}", error);
 				error.fail_if_connection_error()?;
-				retry_backoff
-					.next_backoff()
-					.unwrap_or(relay_utils::relay_loop::RECONNECT_DELAY)
-			}
+				retry_backoff.next_backoff().unwrap_or(relay_utils::relay_loop::RECONNECT_DELAY)
+			},
 		};
 		if finality_proofs_stream.needs_restart {
 			log::warn!(target: "bridge", "{} finality proofs stream is being restarted", P::SOURCE_NAME);
@@ -284,7 +287,7 @@ async fn run_until_connection_lost<P: FinalitySyncPipeline>(
 	}
 }
 
-async fn run_loop_iteration<P, SC, TC>(
+pub(crate) async fn run_loop_iteration<P, SC, TC>(
 	source_client: &SC,
 	target_client: &TC,
 	state: FinalityLoopState<'_, P, SC::FinalityProofsStream>,
@@ -297,19 +300,36 @@ where
 	TC: TargetClient<P>,
 {
 	// read best source headers ids from source and target nodes
-	let best_number_at_source = source_client
-		.best_finalized_block_number()
+	let best_number_at_source =
+		source_client.best_finalized_block_number().await.map_err(Error::Source)?;
+	let best_id_at_target =
+		target_client.best_finalized_source_block_id().await.map_err(Error::Target)?;
+	let best_number_at_target = best_id_at_target.0;
+
+	let different_hash_at_source = ensure_same_fork::<P, _>(&best_id_at_target, source_client)
 		.await
 		.map_err(Error::Source)?;
-	let best_number_at_target = target_client
-		.best_finalized_source_block_number()
-		.await
-		.map_err(Error::Target)?;
+	let using_same_fork = different_hash_at_source.is_none();
+	if let Some(ref different_hash_at_source) = different_hash_at_source {
+		log::error!(
+			target: "bridge",
+			"Source node ({}) and pallet at target node ({}) have different headers at the same height {:?}: \
+			at-source {:?} vs at-target {:?}",
+			P::SOURCE_NAME,
+			P::TARGET_NAME,
+			best_number_at_target,
+			different_hash_at_source,
+			best_id_at_target.1,
+		);
+	}
+
 	if let Some(ref metrics_sync) = *metrics_sync {
 		metrics_sync.update_best_block_at_source(best_number_at_source);
 		metrics_sync.update_best_block_at_target(best_number_at_target);
+		metrics_sync.update_using_same_fork(using_same_fork);
 	}
-	*state.progress = print_sync_progress::<P>(*state.progress, best_number_at_source, best_number_at_target);
+	*state.progress =
+		print_sync_progress::<P>(*state.progress, best_number_at_source, best_number_at_target);
 
 	// if we have already submitted header, then we just need to wait for it
 	// if we're waiting too much, then we believe our transaction has been lost and restart sync
@@ -324,9 +344,9 @@ where
 				P::TARGET_NAME,
 			);
 
-			return Err(Error::Stalled);
+			return Err(Error::Stalled)
 		} else {
-			return Ok(Some(last_transaction));
+			return Ok(Some(last_transaction))
 		}
 	}
 
@@ -343,10 +363,8 @@ where
 	.await?
 	{
 		Some((header, justification)) => {
-			let new_transaction = Transaction {
-				time: Instant::now(),
-				submitted_header_number: header.number(),
-			};
+			let new_transaction =
+				Transaction { time: Instant::now(), submitted_header_number: header.number() };
 
 			log::debug!(
 				target: "bridge",
@@ -361,7 +379,7 @@ where
 				.await
 				.map_err(Error::Target)?;
 			Ok(Some(new_transaction))
-		}
+		},
 		None => Ok(None),
 	}
 }
@@ -398,15 +416,15 @@ where
 	)
 	.await?;
 	let (mut unjustified_headers, mut selected_finality_proof) = match selected_finality_proof {
-		SelectedFinalityProof::Mandatory(header, finality_proof) => return Ok(Some((header, finality_proof))),
+		SelectedFinalityProof::Mandatory(header, finality_proof) =>
+			return Ok(Some((header, finality_proof))),
 		_ if sync_params.only_mandatory_headers => {
 			// we are not reading finality proofs from the stream, so eventually it'll break
 			// but we don't care about transient proofs at all, so it is acceptable
-			return Ok(None);
-		}
-		SelectedFinalityProof::Regular(unjustified_headers, header, finality_proof) => {
-			(unjustified_headers, Some((header, finality_proof)))
-		}
+			return Ok(None)
+		},
+		SelectedFinalityProof::Regular(unjustified_headers, header, finality_proof) =>
+			(unjustified_headers, Some((header, finality_proof))),
 		SelectedFinalityProof::None(unjustified_headers) => (unjustified_headers, None),
 	};
 
@@ -434,6 +452,22 @@ where
 	Ok(selected_finality_proof)
 }
 
+/// Ensures that both clients are on the same fork.
+///
+/// Returns `Some(_)` with header has at the source client if headers are different.
+async fn ensure_same_fork<P: FinalitySyncPipeline, SC: SourceClient<P>>(
+	best_id_at_target: &HeaderId<P::Hash, P::Number>,
+	source_client: &SC,
+) -> Result<Option<P::Hash>, SC::Error> {
+	let header_at_source = source_client.header_and_finality_proof(best_id_at_target.0).await?.0;
+	let header_hash_at_source = header_at_source.hash();
+	Ok(if best_id_at_target.1 == header_hash_at_source {
+		None
+	} else {
+		Some(header_hash_at_source)
+	})
+}
+
 /// Finality proof that has been selected by the `read_missing_headers` function.
 pub(crate) enum SelectedFinalityProof<Header, FinalityProof> {
 	/// Mandatory header and its proof has been selected. We shall submit proof for this header.
@@ -451,7 +485,11 @@ pub(crate) enum SelectedFinalityProof<Header, FinalityProof> {
 /// Otherwise, `SelectedFinalityProof::None` is returned.
 ///
 /// Unless we have found mandatory header, all missing headers are collected and returned.
-pub(crate) async fn read_missing_headers<P: FinalitySyncPipeline, SC: SourceClient<P>, TC: TargetClient<P>>(
+pub(crate) async fn read_missing_headers<
+	P: FinalitySyncPipeline,
+	SC: SourceClient<P>,
+	TC: TargetClient<P>,
+>(
 	source_client: &SC,
 	_target_client: &TC,
 	best_number_at_source: P::Number,
@@ -470,21 +508,29 @@ pub(crate) async fn read_missing_headers<P: FinalitySyncPipeline, SC: SourceClie
 		match (is_mandatory, finality_proof) {
 			(true, Some(finality_proof)) => {
 				log::trace!(target: "bridge", "Header {:?} is mandatory", header_number);
-				return Ok(SelectedFinalityProof::Mandatory(header, finality_proof));
-			}
+				return Ok(SelectedFinalityProof::Mandatory(header, finality_proof))
+			},
 			(true, None) => return Err(Error::MissingMandatoryFinalityProof(header.number())),
 			(false, Some(finality_proof)) => {
 				log::trace!(target: "bridge", "Header {:?} has persistent finality proof", header_number);
 				unjustified_headers.clear();
 				selected_finality_proof = Some((header, finality_proof));
-			}
+			},
 			(false, None) => {
 				unjustified_headers.push(header);
-			}
+			},
 		}
 
 		header_number = header_number + One::one();
 	}
+
+	log::trace!(
+		target: "bridge",
+		"Read {} {} headers. Selected finality proof for header: {:?}",
+		best_number_at_source.saturating_sub(best_number_at_target),
+		P::SOURCE_NAME,
+		selected_finality_proof.as_ref().map(|(header, _)| header),
+	);
 
 	Ok(match selected_finality_proof {
 		Some((header, proof)) => SelectedFinalityProof::Regular(unjustified_headers, header, proof),
@@ -493,22 +539,46 @@ pub(crate) async fn read_missing_headers<P: FinalitySyncPipeline, SC: SourceClie
 }
 
 /// Read finality proofs from the stream.
-pub(crate) fn read_finality_proofs_from_stream<P: FinalitySyncPipeline, FPS: Stream<Item = P::FinalityProof>>(
+pub(crate) fn read_finality_proofs_from_stream<
+	P: FinalitySyncPipeline,
+	FPS: Stream<Item = P::FinalityProof>,
+>(
 	finality_proofs_stream: &mut RestartableFinalityProofsStream<FPS>,
 	recent_finality_proofs: &mut FinalityProofs<P>,
 ) {
+	let mut proofs_count = 0;
+	let mut first_header_number = None;
+	let mut last_header_number = None;
 	loop {
 		let next_proof = finality_proofs_stream.stream.next();
 		let finality_proof = match next_proof.now_or_never() {
 			Some(Some(finality_proof)) => finality_proof,
 			Some(None) => {
 				finality_proofs_stream.needs_restart = true;
-				break;
-			}
+				break
+			},
 			None => break,
 		};
 
-		recent_finality_proofs.push((finality_proof.target_header_number(), finality_proof));
+		let target_header_number = finality_proof.target_header_number();
+		if first_header_number.is_none() {
+			first_header_number = Some(target_header_number);
+		}
+		last_header_number = Some(target_header_number);
+		proofs_count += 1;
+
+		recent_finality_proofs.push((target_header_number, finality_proof));
+	}
+
+	if proofs_count != 0 {
+		log::trace!(
+			target: "bridge",
+			"Read {} finality proofs from {} finality stream for headers in range [{:?}; {:?}]",
+			proofs_count,
+			P::SOURCE_NAME,
+			first_header_number,
+			last_header_number,
+		);
 	}
 }
 
@@ -520,7 +590,13 @@ pub(crate) fn select_better_recent_finality_proof<P: FinalitySyncPipeline>(
 	selected_finality_proof: Option<(P::Header, P::FinalityProof)>,
 ) -> Option<(P::Header, P::FinalityProof)> {
 	if unjustified_headers.is_empty() || recent_finality_proofs.is_empty() {
-		return selected_finality_proof;
+		log::trace!(
+			target: "bridge",
+			"Can not improve selected {} finality proof {:?}. No unjustified headers and recent proofs",
+			P::SOURCE_NAME,
+			selected_finality_proof.as_ref().map(|(h, _)| h.number()),
+		);
+		return selected_finality_proof
 	}
 
 	const NOT_EMPTY_PROOF: &str = "we have checked that the vec is not empty; qed";
@@ -542,9 +618,24 @@ pub(crate) fn select_better_recent_finality_proof<P: FinalitySyncPipeline>(
 	let selected_finality_proof_index = recent_finality_proofs
 		.binary_search_by_key(intersection.end(), |(number, _)| *number)
 		.unwrap_or_else(|index| index.saturating_sub(1));
-	let (selected_header_number, finality_proof) = &recent_finality_proofs[selected_finality_proof_index];
-	if !intersection.contains(selected_header_number) {
-		return selected_finality_proof;
+	let (selected_header_number, finality_proof) =
+		&recent_finality_proofs[selected_finality_proof_index];
+	let has_selected_finality_proof = intersection.contains(selected_header_number);
+	log::trace!(
+		target: "bridge",
+		"Trying to improve selected {} finality proof {:?}. Headers range: [{:?}; {:?}]. Proofs range: [{:?}; {:?}].\
+		Trying to improve to: {:?}. Result: {}",
+		P::SOURCE_NAME,
+		selected_finality_proof.as_ref().map(|(h, _)| h.number()),
+		unjustified_range_begin,
+		unjustified_range_end,
+		buffered_range_begin,
+		buffered_range_end,
+		selected_header_number,
+		if has_selected_finality_proof { "improved" } else { "not improved" },
+	);
+	if !has_selected_finality_proof {
+		return selected_finality_proof
 	}
 
 	// now remove all obsolete headers and extract selected header
@@ -560,20 +651,15 @@ pub(crate) fn prune_recent_finality_proofs<P: FinalitySyncPipeline>(
 	recent_finality_proofs: &mut FinalityProofs<P>,
 	recent_finality_proofs_limit: usize,
 ) {
-	let position =
-		recent_finality_proofs.binary_search_by_key(&justified_header_number, |(header_number, _)| *header_number);
+	let position = recent_finality_proofs
+		.binary_search_by_key(&justified_header_number, |(header_number, _)| *header_number);
 
 	// remove all obsolete elements
-	*recent_finality_proofs = recent_finality_proofs.split_off(
-		position
-			.map(|position| position + 1)
-			.unwrap_or_else(|position| position),
-	);
+	*recent_finality_proofs = recent_finality_proofs
+		.split_off(position.map(|position| position + 1).unwrap_or_else(|position| position));
 
 	// now - limit vec by size
-	let split_index = recent_finality_proofs
-		.len()
-		.saturating_sub(recent_finality_proofs_limit);
+	let split_index = recent_finality_proofs.len().saturating_sub(recent_finality_proofs_limit);
 	*recent_finality_proofs = recent_finality_proofs.split_off(split_index);
 }
 
@@ -585,15 +671,15 @@ fn print_sync_progress<P: FinalitySyncPipeline>(
 	let (prev_time, prev_best_number_at_target) = progress_context;
 	let now = Instant::now();
 
-	let need_update = now - prev_time > Duration::from_secs(10)
-		|| prev_best_number_at_target
+	let need_update = now - prev_time > Duration::from_secs(10) ||
+		prev_best_number_at_target
 			.map(|prev_best_number_at_target| {
 				best_number_at_target.saturating_sub(prev_best_number_at_target) > 10.into()
 			})
 			.unwrap_or(true);
 
 	if !need_update {
-		return (prev_time, prev_best_number_at_target);
+		return (prev_time, prev_best_number_at_target)
 	}
 
 	log::info!(

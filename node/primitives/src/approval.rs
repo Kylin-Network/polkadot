@@ -20,11 +20,11 @@ pub use sp_consensus_babe::Slot;
 pub use sp_consensus_vrf::schnorrkel::{Randomness, VRFOutput, VRFProof};
 
 use parity_scale_codec::{Decode, Encode};
-use polkadot_primitives::v1::{
-	BlockNumber, CandidateHash, CandidateIndex, CoreIndex, Hash, Header, ValidatorIndex,
-	ValidatorSignature,
+use polkadot_primitives::v2::{
+	BlockNumber, CandidateHash, CandidateIndex, CoreIndex, Hash, Header, SessionIndex,
+	ValidatorIndex, ValidatorSignature,
 };
-use sp_application_crypto::Public;
+use sp_application_crypto::ByteArray;
 use sp_consensus_babe as babe_primitives;
 
 /// Validators assigning to check a particular candidate are split up into tranches.
@@ -128,6 +128,8 @@ pub struct BlockApprovalMeta {
 	pub candidates: Vec<CandidateHash>,
 	/// The consensus slot of the block.
 	pub slot: Slot,
+	/// The session of the block.
+	pub session: SessionIndex,
 }
 
 /// Errors that can occur during the approvals protocol.

@@ -16,38 +16,22 @@
 
 //! Millau-to-Rialto headers sync entrypoint.
 
-use crate::finality_pipeline::{SubstrateFinalitySyncPipeline, SubstrateFinalityToSubstrate};
+use substrate_relay_helper::finality_pipeline::{
+	DirectSubmitFinalityProofCallBuilder, SubstrateFinalitySyncPipeline,
+};
 
-use bp_header_chain::justification::GrandpaJustification;
-use codec::Encode;
-use relay_millau_client::{Millau, SyncHeader as MillauSyncHeader};
-use relay_rialto_client::{Rialto, SigningParams as RialtoSigningParams};
-use relay_substrate_client::{Chain, TransactionSignScheme};
-use sp_core::{Bytes, Pair};
-
-/// Millau-to-Rialto finality sync pipeline.
-pub(crate) type MillauFinalityToRialto = SubstrateFinalityToSubstrate<Millau, Rialto, RialtoSigningParams>;
+/// Description of Millau -> Rialto finalized headers bridge.
+#[derive(Clone, Debug)]
+pub struct MillauFinalityToRialto;
 
 impl SubstrateFinalitySyncPipeline for MillauFinalityToRialto {
-	const BEST_FINALIZED_SOURCE_HEADER_ID_AT_TARGET: &'static str = bp_millau::BEST_FINALIZED_MILLAU_HEADER_METHOD;
+	type SourceChain = relay_millau_client::Millau;
+	type TargetChain = relay_rialto_client::Rialto;
 
-	type TargetChain = Rialto;
-
-	fn transactions_author(&self) -> bp_rialto::AccountId {
-		(*self.target_sign.public().as_array_ref()).into()
-	}
-
-	fn make_submit_finality_proof_transaction(
-		&self,
-		transaction_nonce: <Rialto as Chain>::Index,
-		header: MillauSyncHeader,
-		proof: GrandpaJustification<bp_millau::Header>,
-	) -> Bytes {
-		let call = rialto_runtime::BridgeGrandpaMillauCall::submit_finality_proof(header.into_inner(), proof).into();
-
-		let genesis_hash = *self.target_client.genesis_hash();
-		let transaction = Rialto::sign_transaction(genesis_hash, &self.target_sign, transaction_nonce, call);
-
-		Bytes(transaction.encode())
-	}
+	type SubmitFinalityProofCallBuilder = DirectSubmitFinalityProofCallBuilder<
+		Self,
+		rialto_runtime::Runtime,
+		rialto_runtime::MillauGrandpaInstance,
+	>;
+	type TransactionSignScheme = relay_rialto_client::Rialto;
 }

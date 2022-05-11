@@ -22,8 +22,10 @@
 #![deny(unused_crate_dependencies)]
 #![warn(missing_docs)]
 
-use polkadot_node_subsystem_util::metrics::{self, prometheus};
-use polkadot_primitives::v1::{Block, BlockId, Hash, ParachainHost};
+use polkadot_primitives::{
+	runtime_api::ParachainHost,
+	v2::{Block, BlockId, Hash},
+};
 use polkadot_subsystem::{
 	errors::RuntimeApiError,
 	messages::{RuntimeApiMessage, RuntimeApiRequest as Request},
@@ -41,6 +43,9 @@ use futures::{channel::oneshot, prelude::*, select, stream::FuturesUnordered};
 use std::{collections::VecDeque, pin::Pin, sync::Arc};
 
 mod cache;
+
+mod metrics;
+use self::metrics::Metrics;
 
 #[cfg(test)]
 mod tests;
@@ -144,7 +149,9 @@ where
 			CandidateEvents(relay_parent, events) =>
 				self.requests_cache.cache_candidate_events(relay_parent, events),
 			SessionInfo(_relay_parent, session_index, info) =>
-				self.requests_cache.cache_session_info(session_index, info),
+				if let Some(info) = info {
+					self.requests_cache.cache_session_info(session_index, info);
+				},
 			DmqContents(relay_parent, para_id, messages) =>
 				self.requests_cache.cache_dmq_contents((relay_parent, para_id), messages),
 			InboundHrmpChannelsContents(relay_parent, para_id, contents) => self
@@ -154,6 +161,16 @@ where
 				self.requests_cache.cache_current_babe_epoch(relay_parent, epoch),
 			FetchOnChainVotes(relay_parent, scraped) =>
 				self.requests_cache.cache_on_chain_votes(relay_parent, scraped),
+			PvfsRequirePrecheck(relay_parent, pvfs) =>
+				self.requests_cache.cache_pvfs_require_precheck(relay_parent, pvfs),
+			SubmitPvfCheckStatement(_, _, _, ()) => {},
+			ValidationCodeHash(relay_parent, para_id, assumption, hash) => self
+				.requests_cache
+				.cache_validation_code_hash((relay_parent, para_id, assumption), hash),
+			Version(relay_parent, version) =>
+				self.requests_cache.cache_version(relay_parent, version),
+			StagingDisputes(relay_parent, disputes) =>
+				self.requests_cache.cache_disputes(relay_parent, disputes),
 		}
 	}
 
@@ -184,6 +201,8 @@ where
 		}
 
 		match request {
+			Request::Version(sender) =>
+				query!(version(), sender).map(|sender| Request::Version(sender)),
 			Request::Authorities(sender) =>
 				query!(authorities(), sender).map(|sender| Request::Authorities(sender)),
 			Request::Validators(sender) =>
@@ -226,8 +245,15 @@ where
 					.map(|sender| Request::CandidatePendingAvailability(para, sender)),
 			Request::CandidateEvents(sender) =>
 				query!(candidate_events(), sender).map(|sender| Request::CandidateEvents(sender)),
-			Request::SessionInfo(index, sender) => query!(session_info(index), sender)
-				.map(|sender| Request::SessionInfo(index, sender)),
+			Request::SessionInfo(index, sender) => {
+				if let Some(info) = self.requests_cache.session_info(index) {
+					self.metrics.on_cached_request();
+					let _ = sender.send(Ok(Some(info.clone())));
+					None
+				} else {
+					Some(Request::SessionInfo(index, sender))
+				}
+			},
 			Request::DmqContents(id, sender) =>
 				query!(dmq_contents(id), sender).map(|sender| Request::DmqContents(id, sender)),
 			Request::InboundHrmpChannelsContents(id, sender) =>
@@ -237,6 +263,17 @@ where
 				query!(current_babe_epoch(), sender).map(|sender| Request::CurrentBabeEpoch(sender)),
 			Request::FetchOnChainVotes(sender) =>
 				query!(on_chain_votes(), sender).map(|sender| Request::FetchOnChainVotes(sender)),
+			Request::PvfsRequirePrecheck(sender) => query!(pvfs_require_precheck(), sender)
+				.map(|sender| Request::PvfsRequirePrecheck(sender)),
+			request @ Request::SubmitPvfCheckStatement(_, _, _) => {
+				// This request is side-effecting and thus cannot be cached.
+				Some(request)
+			},
+			Request::ValidationCodeHash(para, assumption, sender) =>
+				query!(validation_code_hash(para, assumption), sender)
+					.map(|sender| Request::ValidationCodeHash(para, assumption, sender)),
+			Request::StagingDisputes(sender) =>
+				query!(disputes(), sender).map(|sender| Request::StagingDisputes(sender)),
 		}
 	}
 
@@ -263,7 +300,7 @@ where
 			self.waiting_requests.push_back((request, receiver));
 
 			if self.waiting_requests.len() > MAX_PARALLEL_REQUESTS * 10 {
-				tracing::warn!(
+				gum::warn!(
 					target: LOG_TARGET,
 					"{} runtime API requests waiting to be executed.",
 					self.waiting_requests.len(),
@@ -333,14 +370,43 @@ where
 	Client: ProvideRuntimeApi<Block>,
 	Client::Api: ParachainHost<Block> + BabeApi<Block> + AuthorityDiscoveryApi<Block>,
 {
+	use sp_api::ApiExt;
+
 	let _timer = metrics.time_make_runtime_api_request();
 
 	macro_rules! query {
-		($req_variant:ident, $api_name:ident ($($param:expr),*), $sender:expr) => {{
+		($req_variant:ident, $api_name:ident ($($param:expr),*), ver = $version:literal, $sender:expr) => {{
 			let sender = $sender;
 			let api = client.runtime_api();
-			let res = api.$api_name(&BlockId::Hash(relay_parent) $(, $param.clone() )*)
-				.map_err(|e| RuntimeApiError::from(format!("{:?}", e)));
+
+			let runtime_version = api.api_version::<dyn ParachainHost<Block>>(&BlockId::Hash(relay_parent))
+				.unwrap_or_else(|e| {
+					gum::warn!(
+						target: LOG_TARGET,
+						"cannot query the runtime API version: {}",
+						e,
+					);
+					Some(0)
+				})
+				.unwrap_or_else(|| {
+					gum::warn!(
+						target: LOG_TARGET,
+						"no runtime version is reported"
+					);
+					0
+				});
+
+			let res = if runtime_version >= $version {
+				api.$api_name(&BlockId::Hash(relay_parent) $(, $param.clone() )*)
+					.map_err(|e| RuntimeApiError::Execution {
+						runtime_api_name: stringify!($api_name),
+						source: std::sync::Arc::new(e),
+					})
+			} else {
+				Err(RuntimeApiError::NotSupported {
+					runtime_api_name: stringify!($api_name),
+				})
+			};
 			metrics.on_request(res.is_ok());
 			let _ = sender.send(res.clone());
 
@@ -349,95 +415,122 @@ where
 	}
 
 	match request {
-		Request::Authorities(sender) => query!(Authorities, authorities(), sender),
-		Request::Validators(sender) => query!(Validators, validators(), sender),
-		Request::ValidatorGroups(sender) => query!(ValidatorGroups, validator_groups(), sender),
+		Request::Version(sender) => {
+			let api = client.runtime_api();
+
+			let runtime_version = match api
+				.api_version::<dyn ParachainHost<Block>>(&BlockId::Hash(relay_parent))
+			{
+				Ok(Some(v)) => Ok(v),
+				Ok(None) => Err(RuntimeApiError::NotSupported { runtime_api_name: "api_version" }),
+				Err(e) => Err(RuntimeApiError::Execution {
+					runtime_api_name: "api_version",
+					source: std::sync::Arc::new(e),
+				}),
+			};
+
+			let _ = sender.send(runtime_version.clone());
+			runtime_version.ok().map(|v| RequestResult::Version(relay_parent, v))
+		},
+
+		Request::Authorities(sender) => query!(Authorities, authorities(), ver = 1, sender),
+		Request::Validators(sender) => query!(Validators, validators(), ver = 1, sender),
+		Request::ValidatorGroups(sender) =>
+			query!(ValidatorGroups, validator_groups(), ver = 1, sender),
 		Request::AvailabilityCores(sender) =>
-			query!(AvailabilityCores, availability_cores(), sender),
-		Request::PersistedValidationData(para, assumption, sender) =>
-			query!(PersistedValidationData, persisted_validation_data(para, assumption), sender),
+			query!(AvailabilityCores, availability_cores(), ver = 1, sender),
+		Request::PersistedValidationData(para, assumption, sender) => query!(
+			PersistedValidationData,
+			persisted_validation_data(para, assumption),
+			ver = 1,
+			sender
+		),
 		Request::AssumedValidationData(para, expected_persisted_validation_data_hash, sender) =>
 			query!(
 				AssumedValidationData,
 				assumed_validation_data(para, expected_persisted_validation_data_hash),
+				ver = 1,
 				sender
 			),
-		Request::CheckValidationOutputs(para, commitments, sender) =>
-			query!(CheckValidationOutputs, check_validation_outputs(para, commitments), sender),
+		Request::CheckValidationOutputs(para, commitments, sender) => query!(
+			CheckValidationOutputs,
+			check_validation_outputs(para, commitments),
+			ver = 1,
+			sender
+		),
 		Request::SessionIndexForChild(sender) =>
-			query!(SessionIndexForChild, session_index_for_child(), sender),
+			query!(SessionIndexForChild, session_index_for_child(), ver = 1, sender),
 		Request::ValidationCode(para, assumption, sender) =>
-			query!(ValidationCode, validation_code(para, assumption), sender),
-		Request::ValidationCodeByHash(validation_code_hash, sender) =>
-			query!(ValidationCodeByHash, validation_code_by_hash(validation_code_hash), sender),
-		Request::CandidatePendingAvailability(para, sender) =>
-			query!(CandidatePendingAvailability, candidate_pending_availability(para), sender),
-		Request::CandidateEvents(sender) => query!(CandidateEvents, candidate_events(), sender),
-		Request::SessionInfo(index, sender) => query!(SessionInfo, session_info(index), sender),
-		Request::DmqContents(id, sender) => query!(DmqContents, dmq_contents(id), sender),
-		Request::InboundHrmpChannelsContents(id, sender) =>
-			query!(InboundHrmpChannelsContents, inbound_hrmp_channels_contents(id), sender),
-		Request::CurrentBabeEpoch(sender) => query!(CurrentBabeEpoch, current_epoch(), sender),
-		Request::FetchOnChainVotes(sender) => query!(FetchOnChainVotes, on_chain_votes(), sender),
-	}
-}
+			query!(ValidationCode, validation_code(para, assumption), ver = 1, sender),
+		Request::ValidationCodeByHash(validation_code_hash, sender) => query!(
+			ValidationCodeByHash,
+			validation_code_by_hash(validation_code_hash),
+			ver = 1,
+			sender
+		),
+		Request::CandidatePendingAvailability(para, sender) => query!(
+			CandidatePendingAvailability,
+			candidate_pending_availability(para),
+			ver = 1,
+			sender
+		),
+		Request::CandidateEvents(sender) =>
+			query!(CandidateEvents, candidate_events(), ver = 1, sender),
+		Request::SessionInfo(index, sender) => {
+			let api = client.runtime_api();
+			let block_id = BlockId::Hash(relay_parent);
 
-#[derive(Clone)]
-struct MetricsInner {
-	chain_api_requests: prometheus::CounterVec<prometheus::U64>,
-	make_runtime_api_request: prometheus::Histogram,
-}
+			let api_version = api
+				.api_version::<dyn ParachainHost<Block>>(&BlockId::Hash(relay_parent))
+				.unwrap_or_default()
+				.unwrap_or_default();
 
-/// Runtime API metrics.
-#[derive(Default, Clone)]
-pub struct Metrics(Option<MetricsInner>);
-
-impl Metrics {
-	fn on_request(&self, succeeded: bool) {
-		if let Some(metrics) = &self.0 {
-			if succeeded {
-				metrics.chain_api_requests.with_label_values(&["succeeded"]).inc();
+			let res = if api_version >= 2 {
+				let res =
+					api.session_info(&block_id, index).map_err(|e| RuntimeApiError::Execution {
+						runtime_api_name: "SessionInfo",
+						source: std::sync::Arc::new(e),
+					});
+				metrics.on_request(res.is_ok());
+				res
 			} else {
-				metrics.chain_api_requests.with_label_values(&["failed"]).inc();
-			}
-		}
-	}
+				#[allow(deprecated)]
+				let res = api.session_info_before_version_2(&block_id, index).map_err(|e| {
+					RuntimeApiError::Execution {
+						runtime_api_name: "SessionInfo",
+						source: std::sync::Arc::new(e),
+					}
+				});
+				metrics.on_request(res.is_ok());
 
-	fn on_cached_request(&self) {
-		self.0
-			.as_ref()
-			.map(|metrics| metrics.chain_api_requests.with_label_values(&["cached"]).inc());
-	}
+				res.map(|r| r.map(|old| old.into()))
+			};
 
-	/// Provide a timer for `make_runtime_api_request` which observes on drop.
-	fn time_make_runtime_api_request(
-		&self,
-	) -> Option<metrics::prometheus::prometheus::HistogramTimer> {
-		self.0.as_ref().map(|metrics| metrics.make_runtime_api_request.start_timer())
-	}
-}
+			let _ = sender.send(res.clone());
 
-impl metrics::Metrics for Metrics {
-	fn try_register(registry: &prometheus::Registry) -> Result<Self, prometheus::PrometheusError> {
-		let metrics = MetricsInner {
-			chain_api_requests: prometheus::register(
-				prometheus::CounterVec::new(
-					prometheus::Opts::new(
-						"parachain_runtime_api_requests_total",
-						"Number of Runtime API requests served.",
-					),
-					&["success"],
-				)?,
-				registry,
-			)?,
-			make_runtime_api_request: prometheus::register(
-				prometheus::Histogram::with_opts(prometheus::HistogramOpts::new(
-					"parachain_runtime_api_make_runtime_api_request",
-					"Time spent within `runtime_api::make_runtime_api_request`",
-				))?,
-				registry,
-			)?,
-		};
-		Ok(Metrics(Some(metrics)))
+			res.ok().map(|res| RequestResult::SessionInfo(relay_parent, index, res))
+		},
+		Request::DmqContents(id, sender) => query!(DmqContents, dmq_contents(id), ver = 1, sender),
+		Request::InboundHrmpChannelsContents(id, sender) =>
+			query!(InboundHrmpChannelsContents, inbound_hrmp_channels_contents(id), ver = 1, sender),
+		Request::CurrentBabeEpoch(sender) =>
+			query!(CurrentBabeEpoch, current_epoch(), ver = 1, sender),
+		Request::FetchOnChainVotes(sender) =>
+			query!(FetchOnChainVotes, on_chain_votes(), ver = 1, sender),
+		Request::SubmitPvfCheckStatement(stmt, signature, sender) => {
+			query!(
+				SubmitPvfCheckStatement,
+				submit_pvf_check_statement(stmt, signature),
+				ver = 2,
+				sender
+			)
+		},
+		Request::PvfsRequirePrecheck(sender) => {
+			query!(PvfsRequirePrecheck, pvfs_require_precheck(), ver = 2, sender)
+		},
+		Request::ValidationCodeHash(para, assumption, sender) =>
+			query!(ValidationCodeHash, validation_code_hash(para, assumption), ver = 2, sender),
+		Request::StagingDisputes(sender) =>
+			query!(StagingDisputes, staging_get_disputes(), ver = 2, sender),
 	}
 }

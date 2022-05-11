@@ -22,6 +22,7 @@ use futures::{channel::oneshot, pending, pin_mut, select, stream, FutureExt, Str
 use futures_timer::Delay;
 use std::time::Duration;
 
+use ::test_helpers::{dummy_candidate_descriptor, dummy_hash};
 use polkadot_node_primitives::{BlockData, PoV};
 use polkadot_node_subsystem_types::messages::{
 	CandidateBackingMessage, CandidateValidationMessage,
@@ -32,7 +33,7 @@ use polkadot_overseer::{
 	gen::{FromOverseer, SpawnedSubsystem},
 	AllMessages, HeadSupportsParachains, OverseerSignal, SubsystemError,
 };
-use polkadot_primitives::v1::Hash;
+use polkadot_primitives::v2::{CandidateReceipt, Hash};
 
 struct AlwaysSupportsParachains;
 impl HeadSupportsParachains for AlwaysSupportsParachains {
@@ -58,13 +59,13 @@ impl Subsystem1 {
 			match ctx.try_recv().await {
 				Ok(Some(msg)) => {
 					if let FromOverseer::Communication { msg } = msg {
-						tracing::info!("msg {:?}", msg);
+						gum::info!("msg {:?}", msg);
 					}
 					continue 'louy
 				},
 				Ok(None) => (),
 				Err(_) => {
-					tracing::info!("exiting");
+					gum::info!("exiting");
 					break 'louy
 				},
 			}
@@ -72,8 +73,13 @@ impl Subsystem1 {
 			Delay::new(Duration::from_secs(1)).await;
 			let (tx, _) = oneshot::channel();
 
+			let candidate_receipt = CandidateReceipt {
+				descriptor: dummy_candidate_descriptor(dummy_hash()),
+				commitments_hash: Hash::zero(),
+			};
+
 			let msg = CandidateValidationMessage::ValidateFromChainState(
-				Default::default(),
+				candidate_receipt,
 				PoV { block_data: BlockData(Vec::new()) }.into(),
 				Default::default(),
 				tx,
@@ -120,7 +126,7 @@ impl Subsystem2 {
 			"subsystem-2-job",
 			Box::pin(async {
 				loop {
-					tracing::info!("Job tick");
+					gum::info!("Job tick");
 					Delay::new(Duration::from_secs(1)).await;
 				}
 			}),
@@ -130,14 +136,14 @@ impl Subsystem2 {
 		loop {
 			match ctx.try_recv().await {
 				Ok(Some(msg)) => {
-					tracing::info!("Subsystem2 received message {:?}", msg);
+					gum::info!("Subsystem2 received message {:?}", msg);
 					continue
 				},
 				Ok(None) => {
 					pending!();
 				},
 				Err(_) => {
-					tracing::info!("exiting");
+					gum::info!("exiting");
 					return
 				},
 			}
@@ -188,7 +194,7 @@ fn main() {
 			select! {
 				_ = overseer_fut => break,
 				_ = timer_stream.next() => {
-					tracing::info!("tick");
+					gum::info!("tick");
 				}
 				complete => break,
 			}

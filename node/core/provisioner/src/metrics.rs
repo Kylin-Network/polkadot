@@ -15,7 +15,6 @@
 // along with Polkadot.  If not, see <http://www.gnu.org/licenses/>.
 
 use polkadot_node_subsystem_util::metrics::{self, prometheus};
-use std::convert::TryInto;
 
 #[derive(Clone)]
 struct MetricsInner {
@@ -35,6 +34,12 @@ struct MetricsInner {
 pub struct Metrics(Option<MetricsInner>);
 
 impl Metrics {
+	/// Creates new dummy `Metrics` instance. Used for testing only.
+	#[cfg(test)]
+	pub fn new_dummy() -> Metrics {
+		Metrics(None)
+	}
+
 	pub(crate) fn on_inherent_data_request(&self, response: Result<(), ()>) {
 		if let Some(metrics) = &self.0 {
 			match response {
@@ -91,7 +96,7 @@ impl metrics::Metrics for Metrics {
 			inherent_data_requests: prometheus::register(
 				prometheus::CounterVec::new(
 					prometheus::Opts::new(
-						"parachain_inherent_data_requests_total",
+						"polkadot_parachain_inherent_data_requests_total",
 						"Number of InherentData requests served by provisioner.",
 					),
 					&["success"],
@@ -100,14 +105,14 @@ impl metrics::Metrics for Metrics {
 			)?,
 			request_inherent_data: prometheus::register(
 				prometheus::Histogram::with_opts(prometheus::HistogramOpts::new(
-					"parachain_provisioner_request_inherent_data_time",
+					"polkadot_parachain_provisioner_request_inherent_data_time",
 					"Time spent within `provisioner::request_inherent_data`",
 				))?,
 				registry,
 			)?,
 			provisionable_data: prometheus::register(
 				prometheus::Histogram::with_opts(prometheus::HistogramOpts::new(
-					"parachain_provisioner_provisionable_data_time",
+					"polkadot_parachain_provisioner_provisionable_data_time",
 					"Time spent within `provisioner::provisionable_data`",
 				))?,
 				registry,
@@ -115,7 +120,7 @@ impl metrics::Metrics for Metrics {
 			inherent_data_dispute_statements: prometheus::register(
 				prometheus::CounterVec::new(
 					prometheus::Opts::new(
-						"parachain_inherent_data_dispute_statements",
+						"polkadot_parachain_inherent_data_dispute_statements",
 						"Number of dispute statements passed to `create_inherent()`.",
 					),
 					&["validity"],
@@ -124,7 +129,7 @@ impl metrics::Metrics for Metrics {
 			)?,
 			inherent_data_dispute_statement_sets: prometheus::register(
 				prometheus::Counter::new(
-					"parachain_inherent_data_dispute_statement_sets",
+					"polkadot_parachain_inherent_data_dispute_statement_sets",
 					"Number of dispute statements sets passed to `create_inherent()`.",
 				)?,
 				registry,

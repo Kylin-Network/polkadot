@@ -23,11 +23,10 @@ use thiserror::Error;
 
 use parity_scale_codec::{Decode, Encode};
 
-use polkadot_primitives::v1::{
+use super::{InvalidDisputeVote, SignedDisputeStatement, ValidDisputeVote};
+use polkadot_primitives::v2::{
 	CandidateReceipt, DisputeStatement, SessionIndex, SessionInfo, ValidatorIndex,
 };
-
-use super::{InvalidDisputeVote, SignedDisputeStatement, ValidDisputeVote};
 
 /// A dispute initiating/participating message that is guaranteed to have been built from signed
 /// statements.

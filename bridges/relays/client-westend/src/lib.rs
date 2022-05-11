@@ -16,10 +16,9 @@
 
 //! Types used to connect to the Westend chain.
 
-use codec::Encode;
-use relay_substrate_client::{Chain, ChainBase, ChainWithBalances, TransactionSignScheme};
-use sp_core::{storage::StorageKey, Pair};
-use sp_runtime::{generic::SignedPayload, traits::IdentifyAccount};
+use frame_support::weights::Weight;
+use relay_substrate_client::{Chain, ChainBase, ChainWithBalances, ChainWithGrandpa};
+use sp_core::storage::StorageKey;
 use std::time::Duration;
 
 /// Westend header id.
@@ -37,17 +36,38 @@ impl ChainBase for Westend {
 	type Hash = bp_westend::Hash;
 	type Hasher = bp_westend::Hasher;
 	type Header = bp_westend::Header;
+
+	type AccountId = bp_westend::AccountId;
+	type Balance = bp_westend::Balance;
+	type Index = bp_westend::Nonce;
+	type Signature = bp_westend::Signature;
+
+	fn max_extrinsic_size() -> u32 {
+		bp_westend::Westend::max_extrinsic_size()
+	}
+
+	fn max_extrinsic_weight() -> Weight {
+		bp_westend::Westend::max_extrinsic_weight()
+	}
 }
 
 impl Chain for Westend {
 	const NAME: &'static str = "Westend";
+	const TOKEN_ID: Option<&'static str> = None;
+	const BEST_FINALIZED_HEADER_ID_METHOD: &'static str =
+		bp_westend::BEST_FINALIZED_WESTEND_HEADER_METHOD;
 	const AVERAGE_BLOCK_INTERVAL: Duration = Duration::from_secs(6);
+	const STORAGE_PROOF_OVERHEAD: u32 = bp_westend::EXTRA_STORAGE_PROOF_SIZE;
+	const MAXIMAL_ENCODED_ACCOUNT_ID_SIZE: u32 = bp_westend::MAXIMAL_ENCODED_ACCOUNT_ID_SIZE;
 
-	type AccountId = bp_westend::AccountId;
-	type Index = bp_westend::Nonce;
 	type SignedBlock = bp_westend::SignedBlock;
 	type Call = bp_westend::Call;
-	type Balance = bp_westend::Balance;
+	type WeightToFee = bp_westend::WeightToFee;
+}
+
+impl ChainWithGrandpa for Westend {
+	const WITH_CHAIN_GRANDPA_PALLET_NAME: &'static str =
+		bp_westend::WITH_WESTEND_GRANDPA_PALLET_NAME;
 }
 
 impl ChainWithBalances for Westend {
@@ -55,42 +75,3 @@ impl ChainWithBalances for Westend {
 		StorageKey(bp_westend::account_info_storage_key(account_id))
 	}
 }
-
-impl TransactionSignScheme for Westend {
-	type Chain = Westend;
-	type AccountKeyPair = sp_core::sr25519::Pair;
-	type SignedTransaction = bp_westend::UncheckedExtrinsic;
-
-	fn sign_transaction(
-		genesis_hash: <Self::Chain as ChainBase>::Hash,
-		signer: &Self::AccountKeyPair,
-		signer_nonce: <Self::Chain as Chain>::Index,
-		call: <Self::Chain as Chain>::Call,
-	) -> Self::SignedTransaction {
-		let raw_payload = SignedPayload::new(
-			call,
-			bp_westend::SignedExtensions::new(
-				bp_westend::VERSION,
-				sp_runtime::generic::Era::Immortal,
-				genesis_hash,
-				signer_nonce,
-				0,
-			),
-		)
-		.expect("SignedExtension never fails.");
-
-		let signature = raw_payload.using_encoded(|payload| signer.sign(payload));
-		let signer: sp_runtime::MultiSigner = signer.public().into();
-		let (call, extra, _) = raw_payload.deconstruct();
-
-		bp_westend::UncheckedExtrinsic::new_signed(
-			call,
-			sp_runtime::MultiAddress::Id(signer.into_account()),
-			signature.into(),
-			extra,
-		)
-	}
-}
-
-/// Westend signing params.
-pub type SigningParams = sp_core::sr25519::Pair;

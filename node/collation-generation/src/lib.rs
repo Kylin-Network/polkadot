@@ -24,16 +24,16 @@ use polkadot_node_primitives::{AvailableData, CollationGenerationConfig, PoV};
 use polkadot_node_subsystem::{
 	messages::{AllMessages, CollationGenerationMessage, CollatorProtocolMessage},
 	overseer, ActiveLeavesUpdate, FromOverseer, OverseerSignal, SpawnedSubsystem, SubsystemContext,
-	SubsystemError, SubsystemResult,
+	SubsystemError, SubsystemResult, SubsystemSender,
 };
 use polkadot_node_subsystem_util::{
-	metrics::{self, prometheus},
 	request_availability_cores, request_persisted_validation_data, request_validation_code,
-	request_validators,
+	request_validation_code_hash, request_validators,
 };
-use polkadot_primitives::v1::{
+use polkadot_primitives::v2::{
 	collator_signature_payload, CandidateCommitments, CandidateDescriptor, CandidateReceipt,
-	CoreState, Hash, OccupiedCoreAssumption, PersistedValidationData,
+	CoreState, Hash, Id as ParaId, OccupiedCoreAssumption, PersistedValidationData,
+	ValidationCodeHash,
 };
 use sp_core::crypto::Pair;
 use std::sync::Arc;
@@ -42,6 +42,9 @@ mod error;
 
 #[cfg(test)]
 mod tests;
+
+mod metrics;
+use self::metrics::Metrics;
 
 const LOG_TARGET: &'static str = "parachain::collation-generation";
 
@@ -128,7 +131,7 @@ impl CollationGenerationSubsystem {
 					)
 					.await
 					{
-						tracing::warn!(target: LOG_TARGET, err = ?err, "failed to handle new activations");
+						gum::warn!(target: LOG_TARGET, err = ?err, "failed to handle new activations");
 					}
 				}
 
@@ -139,7 +142,7 @@ impl CollationGenerationSubsystem {
 				msg: CollationGenerationMessage::Initialize(config),
 			}) => {
 				if self.config.is_some() {
-					tracing::error!(target: LOG_TARGET, "double initialization");
+					gum::error!(target: LOG_TARGET, "double initialization");
 				} else {
 					self.config = Some(Arc::new(config));
 				}
@@ -147,7 +150,7 @@ impl CollationGenerationSubsystem {
 			},
 			Ok(FromOverseer::Signal(OverseerSignal::BlockFinalized(..))) => false,
 			Err(err) => {
-				tracing::error!(
+				gum::error!(
 					target: LOG_TARGET,
 					err = ?err,
 					"error receiving message from subsystem context: {:?}",
@@ -206,7 +209,7 @@ async fn handle_new_activations<Context: SubsystemContext>(
 					(scheduled_core, OccupiedCoreAssumption::Free),
 				CoreState::Occupied(_occupied_core) => {
 					// TODO: https://github.com/paritytech/polkadot/issues/1573
-					tracing::trace!(
+					gum::trace!(
 						target: LOG_TARGET,
 						core_idx = %core_idx,
 						relay_parent = ?relay_parent,
@@ -215,7 +218,7 @@ async fn handle_new_activations<Context: SubsystemContext>(
 					continue
 				},
 				CoreState::Free => {
-					tracing::trace!(
+					gum::trace!(
 						target: LOG_TARGET,
 						core_idx = %core_idx,
 						"core is free. Keep going.",
@@ -225,7 +228,7 @@ async fn handle_new_activations<Context: SubsystemContext>(
 			};
 
 			if scheduled_core.para_id != config.para_id {
-				tracing::trace!(
+				gum::trace!(
 					target: LOG_TARGET,
 					core_idx = %core_idx,
 					relay_parent = ?relay_parent,
@@ -251,7 +254,7 @@ async fn handle_new_activations<Context: SubsystemContext>(
 			{
 				Some(v) => v,
 				None => {
-					tracing::trace!(
+					gum::trace!(
 						target: LOG_TARGET,
 						core_idx = %core_idx,
 						relay_parent = ?relay_parent,
@@ -263,29 +266,27 @@ async fn handle_new_activations<Context: SubsystemContext>(
 				},
 			};
 
-			let validation_code = match request_validation_code(
+			let validation_code_hash = match obtain_current_validation_code_hash(
 				relay_parent,
 				scheduled_core.para_id,
 				assumption,
 				ctx.sender(),
 			)
-			.await
-			.await??
+			.await?
 			{
 				Some(v) => v,
 				None => {
-					tracing::trace!(
+					gum::trace!(
 						target: LOG_TARGET,
 						core_idx = %core_idx,
 						relay_parent = ?relay_parent,
 						our_para = %config.para_id,
 						their_para = %scheduled_core.para_id,
-						"validation code is not available",
+						"validation code hash is not found.",
 					);
 					continue
 				},
 			};
-			let validation_code_hash = validation_code.hash();
 
 			let task_config = config.clone();
 			let mut task_sender = sender.clone();
@@ -299,7 +300,7 @@ async fn handle_new_activations<Context: SubsystemContext>(
 						match (task_config.collator)(relay_parent, &validation_data).await {
 							Some(collation) => collation.into_inner(),
 							None => {
-								tracing::debug!(
+								gum::debug!(
 									target: LOG_TARGET,
 									para_id = %scheduled_core.para_id,
 									"collator returned no collation on collate",
@@ -310,9 +311,7 @@ async fn handle_new_activations<Context: SubsystemContext>(
 
 					// Apply compression to the block data.
 					let pov = {
-						let pov = polkadot_node_primitives::maybe_compress_pov(
-							collation.proof_of_validity,
-						);
+						let pov = collation.proof_of_validity.into_compressed();
 						let encoded_size = pov.encoded_size();
 
 						// As long as `POV_BOMB_LIMIT` is at least `max_pov_size`, this ensures
@@ -321,7 +320,7 @@ async fn handle_new_activations<Context: SubsystemContext>(
 						// As such, honest collators never produce an uncompressed PoV which starts with
 						// a compression magic number, which would lead validators to reject the collation.
 						if encoded_size > validation_data.max_pov_size as usize {
-							tracing::debug!(
+							gum::debug!(
 								target: LOG_TARGET,
 								para_id = %scheduled_core.para_id,
 								size = encoded_size,
@@ -349,7 +348,7 @@ async fn handle_new_activations<Context: SubsystemContext>(
 						match erasure_root(n_validators, validation_data, pov.clone()) {
 							Ok(erasure_root) => erasure_root,
 							Err(err) => {
-								tracing::error!(
+								gum::error!(
 									target: LOG_TARGET,
 									para_id = %scheduled_core.para_id,
 									err = ?err,
@@ -383,7 +382,7 @@ async fn handle_new_activations<Context: SubsystemContext>(
 						},
 					};
 
-					tracing::debug!(
+					gum::debug!(
 						target: LOG_TARGET,
 						candidate_hash = ?ccr.hash(),
 						?pov_hash,
@@ -399,7 +398,7 @@ async fn handle_new_activations<Context: SubsystemContext>(
 						))
 						.await
 					{
-						tracing::warn!(
+						gum::warn!(
 							target: LOG_TARGET,
 							para_id = %scheduled_core.para_id,
 							err = ?err,
@@ -414,6 +413,35 @@ async fn handle_new_activations<Context: SubsystemContext>(
 	Ok(())
 }
 
+async fn obtain_current_validation_code_hash(
+	relay_parent: Hash,
+	para_id: ParaId,
+	assumption: OccupiedCoreAssumption,
+	sender: &mut impl SubsystemSender,
+) -> Result<Option<ValidationCodeHash>, crate::error::Error> {
+	use polkadot_node_subsystem::RuntimeApiError;
+
+	match request_validation_code_hash(relay_parent, para_id, assumption, sender)
+		.await
+		.await?
+	{
+		Ok(Some(v)) => Ok(Some(v)),
+		Ok(None) => Ok(None),
+		Err(RuntimeApiError::NotSupported { .. }) => {
+			match request_validation_code(relay_parent, para_id, assumption, sender).await.await? {
+				Ok(Some(v)) => Ok(Some(v.hash())),
+				Ok(None) => Ok(None),
+				Err(e) => {
+					// We assume that the `validation_code` API is always available, so any error
+					// is unexpected.
+					Err(e.into())
+				},
+			}
+		},
+		Err(e @ RuntimeApiError::Execution { .. }) => Err(e.into()),
+	}
+}
+
 fn erasure_root(
 	n_validators: usize,
 	persisted_validation: PersistedValidationData,
@@ -424,89 +452,4 @@ fn erasure_root(
 
 	let chunks = polkadot_erasure_coding::obtain_chunks_v1(n_validators, &available_data)?;
 	Ok(polkadot_erasure_coding::branches(&chunks).root())
-}
-
-#[derive(Clone)]
-struct MetricsInner {
-	collations_generated_total: prometheus::Counter<prometheus::U64>,
-	new_activations_overall: prometheus::Histogram,
-	new_activations_per_relay_parent: prometheus::Histogram,
-	new_activations_per_availability_core: prometheus::Histogram,
-}
-
-/// `CollationGenerationSubsystem` metrics.
-#[derive(Default, Clone)]
-pub struct Metrics(Option<MetricsInner>);
-
-impl Metrics {
-	fn on_collation_generated(&self) {
-		if let Some(metrics) = &self.0 {
-			metrics.collations_generated_total.inc();
-		}
-	}
-
-	/// Provide a timer for new activations which updates on drop.
-	fn time_new_activations(&self) -> Option<metrics::prometheus::prometheus::HistogramTimer> {
-		self.0.as_ref().map(|metrics| metrics.new_activations_overall.start_timer())
-	}
-
-	/// Provide a timer per relay parents which updates on drop.
-	fn time_new_activations_relay_parent(
-		&self,
-	) -> Option<metrics::prometheus::prometheus::HistogramTimer> {
-		self.0
-			.as_ref()
-			.map(|metrics| metrics.new_activations_per_relay_parent.start_timer())
-	}
-
-	/// Provide a timer per availability core which updates on drop.
-	fn time_new_activations_availability_core(
-		&self,
-	) -> Option<metrics::prometheus::prometheus::HistogramTimer> {
-		self.0
-			.as_ref()
-			.map(|metrics| metrics.new_activations_per_availability_core.start_timer())
-	}
-}
-
-impl metrics::Metrics for Metrics {
-	fn try_register(registry: &prometheus::Registry) -> Result<Self, prometheus::PrometheusError> {
-		let metrics = MetricsInner {
-			collations_generated_total: prometheus::register(
-				prometheus::Counter::new(
-					"parachain_collations_generated_total",
-					"Number of collations generated."
-				)?,
-				registry,
-			)?,
-			new_activations_overall: prometheus::register(
-				prometheus::Histogram::with_opts(
-					prometheus::HistogramOpts::new(
-						"parachain_collation_generation_new_activations",
-						"Time spent within fn handle_new_activations",
-					)
-				)?,
-				registry,
-			)?,
-			new_activations_per_relay_parent: prometheus::register(
-				prometheus::Histogram::with_opts(
-					prometheus::HistogramOpts::new(
-						"parachain_collation_generation_per_relay_parent",
-						"Time spent handling a particular relay parent within fn handle_new_activations"
-					)
-				)?,
-				registry,
-			)?,
-			new_activations_per_availability_core: prometheus::register(
-				prometheus::Histogram::with_opts(
-					prometheus::HistogramOpts::new(
-						"parachain_collation_generation_per_availability_core",
-						"Time spent handling a particular availability core for a relay parent in fn handle_new_activations",
-					)
-				)?,
-				registry,
-			)?,
-		};
-		Ok(Metrics(Some(metrics)))
-	}
 }

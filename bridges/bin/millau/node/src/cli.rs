@@ -14,10 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with Parity Bridges Common.  If not, see <http://www.gnu.org/licenses/>.
 
+use clap::Parser;
 use sc_cli::RunCmd;
-use structopt::StructOpt;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub struct Cli {
 	#[structopt(subcommand)]
 	pub subcommand: Option<Subcommand>,
@@ -27,12 +27,13 @@ pub struct Cli {
 }
 
 /// Possible subcommands of the main binary.
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 pub enum Subcommand {
-	/// Key management cli utilities
+	/// Key management CLI utilities
+	#[clap(subcommand)]
 	Key(sc_cli::KeySubcommand),
 
-	/// Verify a signature for a message, provided on STDIN, with a given (public or secret) key.
+	/// Verify a signature for a message, provided on `STDIN`, with a given (public or secret) key.
 	Verify(sc_cli::VerifyCmd),
 
 	/// Generate a seed that provides a vanity address.

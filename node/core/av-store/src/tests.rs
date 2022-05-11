@@ -16,18 +16,17 @@
 
 use super::*;
 
-use std::convert::TryFrom;
-
 use assert_matches::assert_matches;
 use futures::{channel::oneshot, executor, future, Future};
 
+use ::test_helpers::TestCandidateBuilder;
 use parking_lot::Mutex;
 use polkadot_node_primitives::{AvailableData, BlockData, PoV, Proof};
 use polkadot_node_subsystem_test_helpers as test_helpers;
-use polkadot_node_subsystem_util::TimeoutExt;
-use polkadot_primitives::v1::{
-	CandidateDescriptor, CandidateHash, CandidateReceipt, CoreIndex, GroupIndex, HeadData, Header,
-	Id as ParaId, PersistedValidationData, ValidatorId,
+use polkadot_node_subsystem_util::{database::Database, TimeoutExt};
+use polkadot_primitives::v2::{
+	CandidateHash, CandidateReceipt, CoreIndex, GroupIndex, HeadData, Header,
+	PersistedValidationData, ValidatorId,
 };
 use polkadot_subsystem::{
 	errors::RuntimeApiError,
@@ -46,28 +45,6 @@ mod columns {
 const TEST_CONFIG: Config = Config { col_data: columns::DATA, col_meta: columns::META };
 
 type VirtualOverseer = test_helpers::TestSubsystemContextHandle<AvailabilityStoreMessage>;
-
-#[derive(Default)]
-struct TestCandidateBuilder {
-	para_id: ParaId,
-	pov_hash: Hash,
-	relay_parent: Hash,
-	commitments_hash: Hash,
-}
-
-impl TestCandidateBuilder {
-	fn build(self) -> CandidateReceipt {
-		CandidateReceipt {
-			descriptor: CandidateDescriptor {
-				para_id: self.para_id,
-				pov_hash: self.pov_hash,
-				relay_parent: self.relay_parent,
-				..Default::default()
-			},
-			commitments_hash: self.commitments_hash,
-		}
-	}
-}
 
 #[derive(Clone)]
 struct TestClock {
@@ -128,7 +105,7 @@ impl Default for TestState {
 
 fn test_harness<T: Future<Output = VirtualOverseer>>(
 	state: TestState,
-	store: Arc<dyn KeyValueDB>,
+	store: Arc<dyn Database>,
 	test: impl FnOnce(VirtualOverseer) -> T,
 ) {
 	let _ = env_logger::builder()
@@ -167,7 +144,7 @@ fn test_harness<T: Future<Output = VirtualOverseer>>(
 const TIMEOUT: Duration = Duration::from_millis(100);
 
 async fn overseer_send(overseer: &mut VirtualOverseer, msg: AvailabilityStoreMessage) {
-	tracing::trace!(meg = ?msg, "sending message");
+	gum::trace!(meg = ?msg, "sending message");
 	overseer
 		.send(FromOverseer::Communication { msg })
 		.timeout(TIMEOUT)
@@ -180,7 +157,7 @@ async fn overseer_recv(overseer: &mut VirtualOverseer) -> AllMessages {
 		.await
 		.expect(&format!("{:?} is more than enough to receive messages", TIMEOUT));
 
-	tracing::trace!(msg = ?msg, "received message");
+	gum::trace!(msg = ?msg, "received message");
 
 	msg
 }
@@ -189,7 +166,7 @@ async fn overseer_recv_with_timeout(
 	overseer: &mut VirtualOverseer,
 	timeout: Duration,
 ) -> Option<AllMessages> {
-	tracing::trace!("waiting for message...");
+	gum::trace!("waiting for message...");
 	overseer.recv().timeout(timeout).await
 }
 
@@ -201,7 +178,7 @@ async fn overseer_signal(overseer: &mut VirtualOverseer, signal: OverseerSignal)
 		.expect(&format!("{:?} is more than enough for sending signals.", TIMEOUT));
 }
 
-fn with_tx(db: &Arc<impl KeyValueDB>, f: impl FnOnce(&mut DBTransaction)) {
+fn with_tx(db: &Arc<impl Database + ?Sized>, f: impl FnOnce(&mut DBTransaction)) {
 	let mut tx = DBTransaction::new();
 	f(&mut tx);
 	db.write(tx).unwrap();
@@ -216,9 +193,17 @@ fn candidate_included(receipt: CandidateReceipt) -> CandidateEvent {
 	)
 }
 
+#[cfg(test)]
+fn test_store() -> Arc<dyn Database> {
+	let db = kvdb_memorydb::create(columns::NUM_COLUMNS);
+	let db =
+		polkadot_node_subsystem_util::database::kvdb_impl::DbAdapter::new(db, &[columns::META]);
+	Arc::new(db)
+}
+
 #[test]
 fn runtime_api_error_does_not_stop_the_subsystem() {
-	let store = Arc::new(kvdb_memorydb::create(columns::NUM_COLUMNS));
+	let store = test_store();
 
 	test_harness(TestState::default(), store, |mut virtual_overseer| async move {
 		let new_leaf = Hash::repeat_byte(0x01);
@@ -261,7 +246,18 @@ fn runtime_api_error_does_not_stop_the_subsystem() {
 				RuntimeApiRequest::CandidateEvents(tx),
 			)) => {
 				assert_eq!(relay_parent, new_leaf);
-				tx.send(Err(RuntimeApiError::from("oh no".to_string()))).unwrap();
+				#[derive(Debug)]
+				struct FauxError;
+				impl std::error::Error for FauxError {}
+				impl std::fmt::Display for FauxError {
+					fn fmt(&self, _f: &mut std::fmt::Formatter) -> std::fmt::Result {
+						Ok(())
+					}
+				}
+				tx.send(Err(RuntimeApiError::Execution {
+					runtime_api_name: "faux",
+					source: Arc::new(FauxError),
+				})).unwrap();
 			}
 		);
 
@@ -280,7 +276,8 @@ fn runtime_api_error_does_not_stop_the_subsystem() {
 
 #[test]
 fn store_chunk_works() {
-	let store = Arc::new(kvdb_memorydb::create(columns::NUM_COLUMNS));
+	let store = test_store();
+
 	test_harness(TestState::default(), store.clone(), |mut virtual_overseer| async move {
 		let candidate_hash = CandidateHash(Hash::repeat_byte(33));
 		let validator_index = ValidatorIndex(5);
@@ -301,7 +298,7 @@ fn store_chunk_works() {
 				&candidate_hash,
 				&CandidateMeta {
 					data_available: false,
-					chunks_stored: bitvec::bitvec![BitOrderLsb0, u8; 0; n_validators],
+					chunks_stored: bitvec::bitvec![u8, BitOrderLsb0; 0; n_validators],
 					state: State::Unavailable(BETimestamp(0)),
 				},
 			);
@@ -327,7 +324,8 @@ fn store_chunk_works() {
 
 #[test]
 fn store_chunk_does_nothing_if_no_entry_already() {
-	let store = Arc::new(kvdb_memorydb::create(columns::NUM_COLUMNS));
+	let store = test_store();
+
 	test_harness(TestState::default(), store.clone(), |mut virtual_overseer| async move {
 		let candidate_hash = CandidateHash(Hash::repeat_byte(33));
 		let validator_index = ValidatorIndex(5);
@@ -358,7 +356,8 @@ fn store_chunk_does_nothing_if_no_entry_already() {
 
 #[test]
 fn query_chunk_checks_meta() {
-	let store = Arc::new(kvdb_memorydb::create(columns::NUM_COLUMNS));
+	let store = test_store();
+
 	test_harness(TestState::default(), store.clone(), |mut virtual_overseer| async move {
 		let candidate_hash = CandidateHash(Hash::repeat_byte(33));
 		let validator_index = ValidatorIndex(5);
@@ -374,7 +373,7 @@ fn query_chunk_checks_meta() {
 				&CandidateMeta {
 					data_available: false,
 					chunks_stored: {
-						let mut v = bitvec::bitvec![BitOrderLsb0, u8; 0; n_validators];
+						let mut v = bitvec::bitvec![u8, BitOrderLsb0; 0; n_validators];
 						v.set(validator_index.0 as usize, true);
 						v
 					},
@@ -405,7 +404,7 @@ fn query_chunk_checks_meta() {
 
 #[test]
 fn store_block_works() {
-	let store = Arc::new(kvdb_memorydb::create(columns::NUM_COLUMNS));
+	let store = test_store();
 	let test_state = TestState::default();
 	test_harness(test_state.clone(), store.clone(), |mut virtual_overseer| async move {
 		let candidate_hash = CandidateHash(Hash::repeat_byte(1));
@@ -455,7 +454,7 @@ fn store_block_works() {
 
 #[test]
 fn store_pov_and_query_chunk_works() {
-	let store = Arc::new(kvdb_memorydb::create(columns::NUM_COLUMNS));
+	let store = test_store();
 	let test_state = TestState::default();
 
 	test_harness(test_state.clone(), store.clone(), |mut virtual_overseer| async move {
@@ -497,7 +496,7 @@ fn store_pov_and_query_chunk_works() {
 
 #[test]
 fn query_all_chunks_works() {
-	let store = Arc::new(kvdb_memorydb::create(columns::NUM_COLUMNS));
+	let store = test_store();
 	let test_state = TestState::default();
 
 	test_harness(test_state.clone(), store.clone(), |mut virtual_overseer| async move {
@@ -538,7 +537,7 @@ fn query_all_chunks_works() {
 					&candidate_hash_2,
 					&CandidateMeta {
 						data_available: false,
-						chunks_stored: bitvec::bitvec![BitOrderLsb0, u8; 0; n_validators as _],
+						chunks_stored: bitvec::bitvec![u8, BitOrderLsb0; 0; n_validators as _],
 						state: State::Unavailable(BETimestamp(0)),
 					},
 				);
@@ -592,7 +591,7 @@ fn query_all_chunks_works() {
 
 #[test]
 fn stored_but_not_included_data_is_pruned() {
-	let store = Arc::new(kvdb_memorydb::create(columns::NUM_COLUMNS));
+	let store = test_store();
 	let test_state = TestState::default();
 
 	test_harness(test_state.clone(), store.clone(), |mut virtual_overseer| async move {
@@ -636,7 +635,7 @@ fn stored_but_not_included_data_is_pruned() {
 
 #[test]
 fn stored_data_kept_until_finalized() {
-	let store = Arc::new(kvdb_memorydb::create(columns::NUM_COLUMNS));
+	let store = test_store();
 	let test_state = TestState::default();
 
 	test_harness(test_state.clone(), store.clone(), |mut virtual_overseer| async move {
@@ -729,7 +728,7 @@ fn stored_data_kept_until_finalized() {
 
 #[test]
 fn we_dont_miss_anything_if_import_notifications_are_missed() {
-	let store = Arc::new(kvdb_memorydb::create(columns::NUM_COLUMNS));
+	let store = test_store();
 	let test_state = TestState::default();
 
 	test_harness(test_state.clone(), store.clone(), |mut virtual_overseer| async move {
@@ -853,7 +852,7 @@ fn we_dont_miss_anything_if_import_notifications_are_missed() {
 
 #[test]
 fn forkfullness_works() {
-	let store = Arc::new(kvdb_memorydb::create(columns::NUM_COLUMNS));
+	let store = test_store();
 	let test_state = TestState::default();
 
 	test_harness(test_state.clone(), store.clone(), |mut virtual_overseer| async move {

@@ -32,9 +32,6 @@ use parity_scale_codec::{Decode, Encode};
 use sp_core::hexdisplay::HexDisplay;
 use std::{any::Any, panic, sync::Arc, time::Duration};
 
-const NICENESS_BACKGROUND: i32 = 10;
-const NICENESS_FOREGROUND: i32 = 0;
-
 /// The time period after which the preparation worker is considered unresponsive and will be killed.
 // NOTE: If you change this make sure to fix the buckets of `pvf_preparation_time` metric.
 const COMPILATION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -72,25 +69,19 @@ pub async fn start_work(
 	code: Arc<Vec<u8>>,
 	cache_path: &Path,
 	artifact_path: PathBuf,
-	background_priority: bool,
 ) -> Outcome {
 	let IdleWorker { mut stream, pid } = worker;
 
-	tracing::debug!(
+	gum::debug!(
 		target: LOG_TARGET,
 		worker_pid = %pid,
-		%background_priority,
 		"starting prepare for {}",
 		artifact_path.display(),
 	);
 
-	if background_priority {
-		renice(pid, NICENESS_BACKGROUND);
-	}
-
 	with_tmp_file(pid, cache_path, |tmp_file| async move {
 		if let Err(err) = send_request(&mut stream, code, &tmp_file).await {
-			tracing::warn!(
+			gum::warn!(
 				target: LOG_TARGET,
 				worker_pid = %pid,
 				"failed to send a prepare request: {:?}",
@@ -118,7 +109,7 @@ pub async fn start_work(
 					// By convention we expect encoded `PrepareResult`.
 					if let Ok(result) = PrepareResult::decode(&mut response_bytes.as_slice()) {
 						if result.is_ok() {
-							tracing::debug!(
+							gum::debug!(
 								target: LOG_TARGET,
 								worker_pid = %pid,
 								"promoting WIP artifact {} to {}",
@@ -130,7 +121,7 @@ pub async fn start_work(
 								.await
 								.map(|_| Selected::Done(result))
 								.unwrap_or_else(|err| {
-									tracing::warn!(
+									gum::warn!(
 										target: LOG_TARGET,
 										worker_pid = %pid,
 										"failed to rename the artifact from {} to {}: {:?}",
@@ -146,7 +137,7 @@ pub async fn start_work(
 					} else {
 						// We received invalid bytes from the worker.
 						let bound_bytes = &response_bytes[..response_bytes.len().min(4)];
-						tracing::warn!(
+						gum::warn!(
 							target: LOG_TARGET,
 							worker_pid = %pid,
 							"received unexpected response from the prepare worker: {}",
@@ -157,7 +148,7 @@ pub async fn start_work(
 				},
 				Ok(Err(err)) => {
 					// Communication error within the time limit.
-					tracing::warn!(
+					gum::warn!(
 						target: LOG_TARGET,
 						worker_pid = %pid,
 						"failed to recv a prepare response: {:?}",
@@ -172,10 +163,8 @@ pub async fn start_work(
 			};
 
 		match selected {
-			Selected::Done(result) => {
-				renice(pid, NICENESS_FOREGROUND);
-				Outcome::Concluded { worker: IdleWorker { stream, pid }, result }
-			},
+			Selected::Done(result) =>
+				Outcome::Concluded { worker: IdleWorker { stream, pid }, result },
 			Selected::Deadline => Outcome::TimedOut,
 			Selected::IoErr => Outcome::DidNotMakeIt,
 		}
@@ -195,7 +184,7 @@ where
 	let tmp_file = match tmpfile_in("prepare-artifact-", cache_path).await {
 		Ok(f) => f,
 		Err(err) => {
-			tracing::warn!(
+			gum::warn!(
 				target: LOG_TARGET,
 				worker_pid = %pid,
 				"failed to create a temp file for the artifact: {:?}",
@@ -216,7 +205,7 @@ where
 		Ok(()) => (),
 		Err(err) if err.kind() == std::io::ErrorKind::NotFound => (),
 		Err(err) => {
-			tracing::warn!(
+			gum::warn!(
 				target: LOG_TARGET,
 				worker_pid = %pid,
 				"failed to remove the tmp file: {:?}",
@@ -250,28 +239,6 @@ async fn recv_request(stream: &mut UnixStream) -> io::Result<(Vec<u8>, PathBuf)>
 	Ok((code, tmp_file))
 }
 
-pub fn bump_priority(handle: &WorkerHandle) {
-	let pid = handle.id();
-	renice(pid, NICENESS_FOREGROUND);
-}
-
-fn renice(pid: u32, niceness: i32) {
-	tracing::debug!(
-		target: LOG_TARGET,
-		worker_pid = %pid,
-		"changing niceness to {}",
-		niceness,
-	);
-
-	// Consider upstreaming this to the `nix` crate.
-	unsafe {
-		if -1 == libc::setpriority(libc::PRIO_PROCESS, pid, niceness) {
-			let err = std::io::Error::last_os_error();
-			tracing::warn!(target: LOG_TARGET, "failed to set the priority: {:?}", err);
-		}
-	}
-}
-
 /// The entrypoint that the spawned prepare worker should start with. The `socket_path` specifies
 /// the path to the socket used to communicate with the host.
 pub fn worker_entrypoint(socket_path: &str) {
@@ -279,7 +246,7 @@ pub fn worker_entrypoint(socket_path: &str) {
 		loop {
 			let (code, dest) = recv_request(&mut stream).await?;
 
-			tracing::debug!(
+			gum::debug!(
 				target: LOG_TARGET,
 				worker_pid = %std::process::id(),
 				"worker: preparing artifact",
@@ -300,7 +267,7 @@ pub fn worker_entrypoint(socket_path: &str) {
 
 					let artifact_bytes = compiled_artifact.encode();
 
-					tracing::debug!(
+					gum::debug!(
 						target: LOG_TARGET,
 						worker_pid = %std::process::id(),
 						"worker: writing artifact to {}",

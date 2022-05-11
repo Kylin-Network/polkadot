@@ -34,17 +34,16 @@ use polkadot_node_subsystem::{
 		AvailabilityStoreMessage, BitfieldDistributionMessage, BitfieldSigningMessage,
 		RuntimeApiMessage, RuntimeApiRequest,
 	},
-	PerLeafSpan, SubsystemSender,
+	ActivatedLeaf, LeafStatus, PerLeafSpan, SubsystemSender,
 };
-use polkadot_node_subsystem_util::{
-	self as util,
-	metrics::{self, prometheus},
-	JobSender, JobSubsystem, JobTrait, Validator,
-};
-use polkadot_primitives::v1::{AvailabilityBitfield, CoreState, Hash, ValidatorIndex};
+use polkadot_node_subsystem_util::{self as util, JobSender, JobSubsystem, JobTrait, Validator};
+use polkadot_primitives::v2::{AvailabilityBitfield, CoreState, Hash, ValidatorIndex};
 use sp_keystore::{Error as KeystoreError, SyncCryptoStorePtr};
-use std::{iter::FromIterator, pin::Pin, sync::Arc, time::Duration};
+use std::{iter::FromIterator, pin::Pin, time::Duration};
 use wasm_timer::{Delay, Instant};
+
+mod metrics;
+use self::metrics::Metrics;
 
 #[cfg(test)]
 mod tests;
@@ -106,7 +105,7 @@ async fn get_core_availability(
 
 		let res = rx.await.map_err(Into::into);
 
-		tracing::trace!(
+		gum::trace!(
 			target: LOG_TARGET,
 			para_id = %core.para_id(),
 			availability = ?res,
@@ -171,60 +170,16 @@ async fn construct_availability_bitfield(
 	)
 	.await?;
 
-	tracing::debug!(
+	let core_bits = FromIterator::from_iter(results.into_iter());
+	gum::debug!(
 		target: LOG_TARGET,
 		?relay_parent,
-		"Signing Bitfield for {} cores: {:?}",
-		availability_cores.len(),
-		results,
+		"Signing Bitfield for {core_count} cores: {core_bits}",
+		core_count = availability_cores.len(),
+		core_bits = core_bits,
 	);
 
-	Ok(AvailabilityBitfield(FromIterator::from_iter(results)))
-}
-
-#[derive(Clone)]
-struct MetricsInner {
-	bitfields_signed_total: prometheus::Counter<prometheus::U64>,
-	run: prometheus::Histogram,
-}
-
-/// Bitfield signing metrics.
-#[derive(Default, Clone)]
-pub struct Metrics(Option<MetricsInner>);
-
-impl Metrics {
-	fn on_bitfield_signed(&self) {
-		if let Some(metrics) = &self.0 {
-			metrics.bitfields_signed_total.inc();
-		}
-	}
-
-	/// Provide a timer for `prune_povs` which observes on drop.
-	fn time_run(&self) -> Option<metrics::prometheus::prometheus::HistogramTimer> {
-		self.0.as_ref().map(|metrics| metrics.run.start_timer())
-	}
-}
-
-impl metrics::Metrics for Metrics {
-	fn try_register(registry: &prometheus::Registry) -> Result<Self, prometheus::PrometheusError> {
-		let metrics = MetricsInner {
-			bitfields_signed_total: prometheus::register(
-				prometheus::Counter::new(
-					"parachain_bitfields_signed_total",
-					"Number of bitfields signed.",
-				)?,
-				registry,
-			)?,
-			run: prometheus::register(
-				prometheus::Histogram::with_opts(prometheus::HistogramOpts::new(
-					"parachain_bitfield_signing_run",
-					"Time spent within `bitfield_signing::run`",
-				))?,
-				registry,
-			)?,
-		};
-		Ok(Metrics(Some(metrics)))
-	}
+	Ok(AvailabilityBitfield(core_bits))
 }
 
 impl JobTrait for BitfieldSigningJob {
@@ -237,8 +192,7 @@ impl JobTrait for BitfieldSigningJob {
 
 	/// Run a job for the parent block indicated
 	fn run<S: SubsystemSender>(
-		relay_parent: Hash,
-		span: Arc<jaeger::Span>,
+		leaf: ActivatedLeaf,
 		keystore: Self::RunArgs,
 		metrics: Self::Metrics,
 		_receiver: mpsc::Receiver<BitfieldSigningMessage>,
@@ -246,14 +200,23 @@ impl JobTrait for BitfieldSigningJob {
 	) -> Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send>> {
 		let metrics = metrics.clone();
 		async move {
-			let span = PerLeafSpan::new(span, "bitfield-signing");
+			if let LeafStatus::Stale = leaf.status {
+				gum::debug!(
+					target: LOG_TARGET,
+					hash = ?leaf.hash,
+					block_number =  ?leaf.number,
+					"Stale leaf - don't sign bitfields."
+				);
+				return Ok(())
+			}
+
+			let span = PerLeafSpan::new(leaf.span, "bitfield-signing");
 			let _span = span.child("delay");
 			let wait_until = Instant::now() + JOB_DELAY;
 
 			// now do all the work we can before we need to wait for the availability store
 			// if we're not a validator, we can just succeed effortlessly
-			let validator = match Validator::new(relay_parent, keystore.clone(), &mut sender).await
-			{
+			let validator = match Validator::new(leaf.hash, keystore.clone(), &mut sender).await {
 				Ok(validator) => validator,
 				Err(util::Error::NotAValidator) => return Ok(()),
 				Err(err) => return Err(Error::Util(err)),
@@ -270,7 +233,7 @@ impl JobTrait for BitfieldSigningJob {
 			let span_availability = span.child("availability");
 
 			let bitfield = match construct_availability_bitfield(
-				relay_parent,
+				leaf.hash,
 				&span_availability,
 				validator.index(),
 				sender.subsystem_sender(),
@@ -279,7 +242,7 @@ impl JobTrait for BitfieldSigningJob {
 			{
 				Err(Error::Runtime(runtime_err)) => {
 					// Don't take down the node on runtime API errors.
-					tracing::warn!(target: LOG_TARGET, err = ?runtime_err, "Encountered a runtime API error");
+					gum::warn!(target: LOG_TARGET, err = ?runtime_err, "Encountered a runtime API error");
 					return Ok(())
 				},
 				Err(err) => return Err(err),
@@ -296,7 +259,7 @@ impl JobTrait for BitfieldSigningJob {
 			{
 				Some(b) => b,
 				None => {
-					tracing::error!(
+					gum::error!(
 						target: LOG_TARGET,
 						"Key was found at construction, but while signing it could not be found.",
 					);
@@ -311,7 +274,7 @@ impl JobTrait for BitfieldSigningJob {
 
 			sender
 				.send_message(BitfieldDistributionMessage::DistributeBitfield(
-					relay_parent,
+					leaf.hash,
 					signed_bitfield,
 				))
 				.await;

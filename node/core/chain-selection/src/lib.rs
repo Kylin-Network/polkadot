@@ -22,10 +22,10 @@ use polkadot_node_subsystem::{
 	messages::{ChainApiMessage, ChainSelectionMessage},
 	overseer, FromOverseer, OverseerSignal, SpawnedSubsystem, SubsystemContext, SubsystemError,
 };
-use polkadot_primitives::v1::{BlockNumber, ConsensusLog, Hash, Header};
+use polkadot_node_subsystem_util::database::Database;
+use polkadot_primitives::v2::{BlockNumber, ConsensusLog, Hash, Header};
 
 use futures::{channel::oneshot, future::Either, prelude::*};
-use kvdb::KeyValueDB;
 use parity_scale_codec::Error as CodecError;
 
 use std::{
@@ -207,9 +207,9 @@ impl Error {
 	fn trace(&self) {
 		match self {
 			// don't spam the log with spurious errors
-			Self::Oneshot(_) => tracing::debug!(target: LOG_TARGET, err = ?self),
+			Self::Oneshot(_) => gum::debug!(target: LOG_TARGET, err = ?self),
 			// it's worth reporting otherwise
-			_ => tracing::warn!(target: LOG_TARGET, err = ?self),
+			_ => gum::warn!(target: LOG_TARGET, err = ?self),
 		}
 	}
 }
@@ -235,7 +235,7 @@ impl Clock for SystemClock {
 		match SystemTime::now().duration_since(UNIX_EPOCH) {
 			Ok(d) => d.as_secs(),
 			Err(e) => {
-				tracing::warn!(
+				gum::warn!(
 					target: LOG_TARGET,
 					err = ?e,
 					"Current time is before unix epoch. Validation will not work correctly."
@@ -306,14 +306,25 @@ pub struct Config {
 /// The chain selection subsystem.
 pub struct ChainSelectionSubsystem {
 	config: Config,
-	db: Arc<dyn KeyValueDB>,
+	db: Arc<dyn Database>,
 }
 
 impl ChainSelectionSubsystem {
 	/// Create a new instance of the subsystem with the given config
 	/// and key-value store.
-	pub fn new(config: Config, db: Arc<dyn KeyValueDB>) -> Self {
+	pub fn new(config: Config, db: Arc<dyn Database>) -> Self {
 		ChainSelectionSubsystem { config, db }
+	}
+
+	/// Revert to the block corresponding to the specified `hash`.
+	/// The operation is not allowed for blocks older than the last finalized one.
+	pub fn revert_to(&self, hash: Hash) -> Result<(), Error> {
+		let config = db_backend::v1::Config { col_data: self.config.col_data };
+		let mut backend = db_backend::v1::DbBackend::new(self.db.clone(), config);
+
+		let ops = tree::revert_to(&backend, hash)?.into_write_ops();
+
+		backend.write(ops)
 	}
 }
 
@@ -323,9 +334,9 @@ where
 	Context: overseer::SubsystemContext<Message = ChainSelectionMessage>,
 {
 	fn start(self, ctx: Context) -> SpawnedSubsystem {
-		let backend = crate::db_backend::v1::DbBackend::new(
+		let backend = db_backend::v1::DbBackend::new(
 			self.db,
-			crate::db_backend::v1::Config { col_data: self.config.col_data },
+			db_backend::v1::Config { col_data: self.config.col_data },
 		);
 
 		SpawnedSubsystem {
@@ -352,10 +363,11 @@ async fn run<Context, B>(
 		match res {
 			Err(e) => {
 				e.trace();
+				// All errors right now are considered fatal:
 				break
 			},
 			Ok(()) => {
-				tracing::info!(target: LOG_TARGET, "received `Conclude` signal, exiting");
+				gum::info!(target: LOG_TARGET, "received `Conclude` signal, exiting");
 				break
 			},
 		}
@@ -411,7 +423,7 @@ where
 							let _ = tx.send(leaves);
 						}
 						ChainSelectionMessage::BestLeafContaining(required, tx) => {
-							let best_containing = crate::backend::find_best_leaf_containing(
+							let best_containing = backend::find_best_leaf_containing(
 								&*backend,
 								required,
 							)?;
@@ -443,7 +455,7 @@ async fn fetch_finalized(
 	let number = match number_rx.await? {
 		Ok(number) => number,
 		Err(err) => {
-			tracing::warn!(target: LOG_TARGET, ?err, "Fetching finalized number failed");
+			gum::warn!(target: LOG_TARGET, ?err, "Fetching finalized number failed");
 			return Ok(None)
 		},
 	};
@@ -454,16 +466,11 @@ async fn fetch_finalized(
 
 	match hash_rx.await? {
 		Err(err) => {
-			tracing::warn!(
-				target: LOG_TARGET,
-				number,
-				?err,
-				"Fetching finalized block number failed"
-			);
+			gum::warn!(target: LOG_TARGET, number, ?err, "Fetching finalized block number failed");
 			Ok(None)
 		},
 		Ok(None) => {
-			tracing::warn!(target: LOG_TARGET, number, "Missing hash for finalized block number");
+			gum::warn!(target: LOG_TARGET, number, "Missing hash for finalized block number");
 			Ok(None)
 		},
 		Ok(Some(h)) => Ok(Some((h, number))),
@@ -478,7 +485,7 @@ async fn fetch_header(
 	ctx.send_message(ChainApiMessage::BlockHeader(hash, tx)).await;
 
 	Ok(rx.await?.unwrap_or_else(|err| {
-		tracing::warn!(target: LOG_TARGET, ?hash, ?err, "Missing hash for finalized block number");
+		gum::warn!(target: LOG_TARGET, ?hash, ?err, "Missing hash for finalized block number");
 		None
 	}))
 }
@@ -493,7 +500,7 @@ async fn fetch_block_weight(
 	let res = rx.await?;
 
 	Ok(res.unwrap_or_else(|err| {
-		tracing::warn!(target: LOG_TARGET, ?hash, ?err, "Missing hash for finalized block number");
+		gum::warn!(target: LOG_TARGET, ?hash, ?err, "Missing hash for finalized block number");
 		None
 	}))
 }
@@ -517,7 +524,7 @@ async fn handle_active_leaf(
 
 	let header = match fetch_header(ctx, hash).await? {
 		None => {
-			tracing::warn!(target: LOG_TARGET, ?hash, "Missing header for new head");
+			gum::warn!(target: LOG_TARGET, ?hash, "Missing header for new head");
 			return Ok(Vec::new())
 		},
 		Some(h) => h,
@@ -539,7 +546,7 @@ async fn handle_active_leaf(
 	for (hash, header) in new_blocks.into_iter().rev() {
 		let weight = match fetch_block_weight(ctx, hash).await? {
 			None => {
-				tracing::warn!(
+				gum::warn!(
 					target: LOG_TARGET,
 					?hash,
 					"Missing block weight for new head. Skipping chain.",
@@ -553,7 +560,7 @@ async fn handle_active_leaf(
 		};
 
 		let reversion_logs = extract_reversion_logs(&header);
-		crate::tree::import_block(
+		tree::import_block(
 			&mut overlay,
 			hash,
 			header.number,
@@ -579,7 +586,7 @@ fn extract_reversion_logs(header: &Header) -> Vec<BlockNumber> {
 		.enumerate()
 		.filter_map(|(i, d)| match ConsensusLog::from_digest_item(d) {
 			Err(e) => {
-				tracing::warn!(
+				gum::warn!(
 					target: LOG_TARGET,
 					err = ?e,
 					index = i,
@@ -591,7 +598,7 @@ fn extract_reversion_logs(header: &Header) -> Vec<BlockNumber> {
 			},
 			Ok(Some(ConsensusLog::Revert(b))) if b < number => Some(b),
 			Ok(Some(ConsensusLog::Revert(b))) => {
-				tracing::warn!(
+				gum::warn!(
 					target: LOG_TARGET,
 					revert_target = b,
 					block_number = number,
@@ -616,8 +623,7 @@ fn handle_finalized_block(
 	finalized_hash: Hash,
 	finalized_number: BlockNumber,
 ) -> Result<(), Error> {
-	let ops =
-		crate::tree::finalize_block(&*backend, finalized_hash, finalized_number)?.into_write_ops();
+	let ops = tree::finalize_block(&*backend, finalized_hash, finalized_number)?.into_write_ops();
 
 	backend.write(ops)
 }
@@ -627,7 +633,7 @@ fn handle_approved_block(backend: &mut impl Backend, approved_block: Hash) -> Re
 	let ops = {
 		let mut overlay = OverlayedBackend::new(&*backend);
 
-		crate::tree::approve_block(&mut overlay, approved_block)?;
+		tree::approve_block(&mut overlay, approved_block)?;
 
 		overlay.into_write_ops()
 	};
@@ -637,7 +643,7 @@ fn handle_approved_block(backend: &mut impl Backend, approved_block: Hash) -> Re
 
 fn detect_stagnant(backend: &mut impl Backend, now: Timestamp) -> Result<(), Error> {
 	let ops = {
-		let overlay = crate::tree::detect_stagnant(&*backend, now)?;
+		let overlay = tree::detect_stagnant(&*backend, now)?;
 
 		overlay.into_write_ops()
 	};

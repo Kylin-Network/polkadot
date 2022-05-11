@@ -30,7 +30,7 @@ use frame_support::{
 };
 pub use pallet::*;
 use parity_scale_codec::Decode;
-use primitives::v1::Id as ParaId;
+use primitives::v2::Id as ParaId;
 use sp_runtime::traits::{CheckedSub, One, Saturating, Zero};
 use sp_std::{mem::swap, prelude::*};
 
@@ -635,16 +635,10 @@ impl<T: Config> Pallet<T> {
 
 		winning_ranges
 			.into_iter()
-			.map(|range| {
-				let mut final_winner = Default::default();
-				swap(
-					&mut final_winner,
-					winning[range as u8 as usize]
-						.as_mut()
-						.expect("none values are filtered out in previous logic; qed"),
-				);
-				let (bidder, para, amount) = final_winner;
-				(bidder, para, amount, range)
+			.filter_map(|range| {
+				winning[range as u8 as usize]
+					.take()
+					.map(|(bidder, para, amount)| (bidder, para, amount, range))
 			})
 			.collect::<Vec<_>>()
 	}
@@ -655,6 +649,7 @@ impl<T: Config> Pallet<T> {
 mod tests {
 	use super::*;
 	use crate::{auctions, mock::TestRegistrar};
+	use ::test_helpers::{dummy_hash, dummy_head_data, dummy_validation_code};
 	use frame_support::{
 		assert_noop, assert_ok, assert_storage_noop,
 		dispatch::DispatchError::BadOrigin,
@@ -663,7 +658,7 @@ mod tests {
 	};
 	use frame_system::{EnsureRoot, EnsureSignedBy};
 	use pallet_balances;
-	use primitives::v1::{BlockNumber, Header, Id as ParaId};
+	use primitives::v2::{BlockNumber, Header, Id as ParaId};
 	use sp_core::H256;
 	use sp_runtime::traits::{BlakeTwo256, IdentityLookup};
 	use std::{cell::RefCell, collections::BTreeMap};
@@ -710,6 +705,7 @@ mod tests {
 		type SystemWeightInfo = ();
 		type SS58Prefix = ();
 		type OnSetCode = ();
+		type MaxConsumers = frame_support::traits::ConstU32<16>;
 	}
 
 	parameter_types! {
@@ -873,26 +869,26 @@ mod tests {
 			assert_ok!(TestRegistrar::<Test>::register(
 				1,
 				0.into(),
-				Default::default(),
-				Default::default()
+				dummy_head_data(),
+				dummy_validation_code()
 			));
 			assert_ok!(TestRegistrar::<Test>::register(
 				1,
 				1.into(),
-				Default::default(),
-				Default::default()
+				dummy_head_data(),
+				dummy_validation_code()
 			));
 			assert_ok!(TestRegistrar::<Test>::register(
 				1,
 				2.into(),
-				Default::default(),
-				Default::default()
+				dummy_head_data(),
+				dummy_validation_code()
 			));
 			assert_ok!(TestRegistrar::<Test>::register(
 				1,
 				3.into(),
-				Default::default(),
-				Default::default()
+				dummy_head_data(),
+				dummy_validation_code()
 			));
 		});
 		ext
@@ -1471,8 +1467,8 @@ mod tests {
 			assert_ok!(TestRegistrar::<Test>::register(
 				1,
 				1337.into(),
-				Default::default(),
-				Default::default()
+				dummy_head_data(),
+				dummy_validation_code()
 			));
 			assert_ok!(Auctions::bid(Origin::signed(1), 1337.into(), 1, 1, 4, 1));
 		});
@@ -1602,7 +1598,7 @@ mod tests {
 		new_test_ext().execute_with(|| {
 			EndingPeriod::set(30);
 			SampleLength::set(10);
-			set_last_random(Default::default(), 0);
+			set_last_random(dummy_hash(), 0);
 
 			assert_eq!(
 				Auctions::auction_status(System::block_number()),
@@ -1672,7 +1668,7 @@ mod tests {
 				AuctionStatus::<u32>::VrfDelay(4)
 			);
 
-			set_last_random(Default::default(), 45);
+			set_last_random(dummy_hash(), 45);
 			run_to_block(45);
 			assert_eq!(
 				Auctions::auction_status(System::block_number()),
@@ -1776,6 +1772,10 @@ mod benchmarking {
 
 		// Worst case scenario a new bid comes in which kicks out an existing bid for the same slot.
 		bid {
+			// If there is an offset, we need to be on that block to be able to do lease things.
+			let (_, offset) = T::Leaser::lease_period_length();
+			frame_system::Pallet::<T>::set_block_number(offset + One::one());
+
 			// Create a new auction
 			let duration = T::BlockNumber::max_value();
 			let lease_period_index = LeasePeriodOf::<T>::zero();
@@ -1822,8 +1822,12 @@ mod benchmarking {
 		// Worst case: 10 bidders taking all wining spots, and we need to calculate the winner for auction end.
 		// Entire winner map should be full and removed at the end of the benchmark.
 		on_initialize {
+			// If there is an offset, we need to be on that block to be able to do lease things.
+			let (lease_length, offset) = T::Leaser::lease_period_length();
+			frame_system::Pallet::<T>::set_block_number(offset + One::one());
+
 			// Create a new auction
-			let duration: T::BlockNumber = 99u32.into();
+			let duration: T::BlockNumber = lease_length / 2u32.into();
 			let lease_period_index = LeasePeriodOf::<T>::zero();
 			let now = frame_system::Pallet::<T>::block_number();
 			Auctions::<T>::new_auction(RawOrigin::Root.into(), duration, lease_period_index)?;
@@ -1861,8 +1865,12 @@ mod benchmarking {
 
 		// Worst case: 10 bidders taking all wining spots, and winning data is full.
 		cancel_auction {
+			// If there is an offset, we need to be on that block to be able to do lease things.
+			let (lease_length, offset) = T::Leaser::lease_period_length();
+			frame_system::Pallet::<T>::set_block_number(offset + One::one());
+
 			// Create a new auction
-			let duration: T::BlockNumber = 99u32.into();
+			let duration: T::BlockNumber = lease_length / 2u32.into();
 			let lease_period_index = LeasePeriodOf::<T>::zero();
 			let now = frame_system::Pallet::<T>::block_number();
 			Auctions::<T>::new_auction(RawOrigin::Root.into(), duration, lease_period_index)?;

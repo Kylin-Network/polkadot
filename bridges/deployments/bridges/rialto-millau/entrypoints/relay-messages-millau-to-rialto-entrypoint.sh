@@ -1,13 +1,11 @@
 #!/bin/bash
 set -xeu
 
-sleep 20
-curl -v http://millau-node-bob:9933/health
-curl -v http://rialto-node-bob:9933/health
+sleep 15
 
 MESSAGE_LANE=${MSG_EXCHANGE_GEN_LANE:-00000000}
 
-/home/user/substrate-relay relay-messages MillauToRialto \
+/home/user/substrate-relay relay-messages millau-to-rialto \
 	--lane $MESSAGE_LANE \
 	--source-host millau-node-bob \
 	--source-port 9944 \

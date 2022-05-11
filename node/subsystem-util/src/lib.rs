@@ -29,8 +29,8 @@ use polkadot_node_subsystem::{
 	messages::{
 		AllMessages, BoundToRelayParent, RuntimeApiMessage, RuntimeApiRequest, RuntimeApiSender,
 	},
-	overseer, ActiveLeavesUpdate, FromOverseer, OverseerSignal, SpawnedSubsystem, SubsystemContext,
-	SubsystemSender,
+	overseer, ActivatedLeaf, ActiveLeavesUpdate, FromOverseer, OverseerSignal, SpawnedSubsystem,
+	SubsystemContext, SubsystemSender,
 };
 
 pub use overseer::{
@@ -48,23 +48,23 @@ use futures::{
 };
 use parity_scale_codec::Encode;
 use pin_project::pin_project;
-use polkadot_node_jaeger as jaeger;
-use polkadot_primitives::v1::{
+
+use polkadot_primitives::v2::{
 	AuthorityDiscoveryId, CandidateEvent, CommittedCandidateReceipt, CoreState, EncodeAs,
 	GroupIndex, GroupRotationInfo, Hash, Id as ParaId, OccupiedCoreAssumption,
-	PersistedValidationData, SessionIndex, SessionInfo, Signed, SigningContext, ValidationCode,
-	ValidationCodeHash, ValidatorId, ValidatorIndex, ValidatorSignature,
+	PersistedValidationData, ScrapedOnChainVotes, SessionIndex, SessionInfo, Signed,
+	SigningContext, ValidationCode, ValidationCodeHash, ValidatorId, ValidatorIndex,
+	ValidatorSignature,
 };
+pub use rand;
 use sp_application_crypto::AppKey;
-use sp_core::{traits::SpawnNamed, Public};
+use sp_core::{traits::SpawnNamed, ByteArray};
 use sp_keystore::{CryptoStore, Error as KeystoreError, SyncCryptoStorePtr};
 use std::{
 	collections::{hash_map::Entry, HashMap},
-	convert::TryFrom,
 	fmt,
 	marker::Unpin,
 	pin::Pin,
-	sync::Arc,
 	task::{Context, Poll},
 	time::Duration,
 };
@@ -84,6 +84,9 @@ pub mod reexports {
 pub mod rolling_session_window;
 /// Convenient and efficient runtime info access.
 pub mod runtime;
+
+/// Database trait for subsystem.
+pub mod database;
 
 mod determine_new_blocks;
 
@@ -213,6 +216,9 @@ specialize_requests! {
 	fn request_candidate_pending_availability(para_id: ParaId) -> Option<CommittedCandidateReceipt>; CandidatePendingAvailability;
 	fn request_candidate_events() -> Vec<CandidateEvent>; CandidateEvents;
 	fn request_session_info(index: SessionIndex) -> Option<SessionInfo>; SessionInfo;
+	fn request_validation_code_hash(para_id: ParaId, assumption: OccupiedCoreAssumption)
+		-> Option<ValidationCodeHash>; ValidationCodeHash;
+	fn request_on_chain_votes() -> Option<ScrapedOnChainVotes>; FetchOnChainVotes;
 }
 
 /// From the given set of validators, find the first key we can sign with, if any.
@@ -246,8 +252,6 @@ pub async fn sign(
 	key: &ValidatorId,
 	data: &[u8],
 ) -> Result<Option<ValidatorSignature>, KeystoreError> {
-	use std::convert::TryInto;
-
 	let signature =
 		CryptoStore::sign_with(&**keystore, ValidatorId::ID, &key.into(), &data).await?;
 
@@ -274,33 +278,41 @@ pub fn find_validator_group(
 
 /// Choose a random subset of `min` elements.
 /// But always include `is_priority` elements.
-pub fn choose_random_subset<T, F: FnMut(&T) -> bool>(
+pub fn choose_random_subset<T, F: FnMut(&T) -> bool>(is_priority: F, v: &mut Vec<T>, min: usize) {
+	choose_random_subset_with_rng(is_priority, v, &mut rand::thread_rng(), min)
+}
+
+/// Choose a random subset of `min` elements using a specific Random Generator `Rng`
+/// But always include `is_priority` elements.
+pub fn choose_random_subset_with_rng<T, F: FnMut(&T) -> bool, R: rand::Rng>(
 	is_priority: F,
-	mut v: Vec<T>,
+	v: &mut Vec<T>,
+	rng: &mut R,
 	min: usize,
-) -> Vec<T> {
+) {
 	use rand::seq::SliceRandom as _;
 
 	// partition the elements into priority first
 	// the returned index is when non_priority elements start
-	let i = itertools::partition(&mut v, is_priority);
+	let i = itertools::partition(v.iter_mut(), is_priority);
 
 	if i >= min || v.len() <= i {
 		v.truncate(i);
-		return v
+		return
 	}
 
-	let mut rng = rand::thread_rng();
-	v[i..].shuffle(&mut rng);
+	v[i..].shuffle(rng);
 
 	v.truncate(min);
-	v
 }
 
 /// Returns a `bool` with a probability of `a / b` of being true.
 pub fn gen_ratio(a: usize, b: usize) -> bool {
-	use rand::Rng as _;
-	let mut rng = rand::thread_rng();
+	gen_ratio_rng(a, b, &mut rand::thread_rng())
+}
+
+/// Returns a `bool` with a probability of `a / b` of being true.
+pub fn gen_ratio_rng<R: rand::Rng>(a: usize, b: usize, rng: &mut R) -> bool {
 	rng.gen_ratio(a as u32, b as u32)
 }
 
@@ -514,8 +526,7 @@ pub trait JobTrait: Unpin + Sized {
 	///
 	/// The job should be ended when `receiver` returns `None`.
 	fn run<S: SubsystemSender>(
-		parent: Hash,
-		span: Arc<jaeger::Span>,
+		leaf: ActivatedLeaf,
 		run_args: Self::RunArgs,
 		metrics: Self::Metrics,
 		receiver: mpsc::Receiver<Self::ToJob>,
@@ -563,8 +574,7 @@ where
 	/// Spawn a new job for this `parent_hash`, with whatever args are appropriate.
 	fn spawn_job<Job, Sender>(
 		&mut self,
-		parent_hash: Hash,
-		span: Arc<jaeger::Span>,
+		leaf: ActivatedLeaf,
 		run_args: Job::RunArgs,
 		metrics: Job::Metrics,
 		sender: Sender,
@@ -572,13 +582,13 @@ where
 		Job: JobTrait<ToJob = ToJob>,
 		Sender: SubsystemSender,
 	{
+		let hash = leaf.hash;
 		let (to_job_tx, to_job_rx) = mpsc::channel(JOB_CHANNEL_CAPACITY);
 		let (from_job_tx, from_job_rx) = mpsc::channel(JOB_CHANNEL_CAPACITY);
 
 		let (future, abort_handle) = future::abortable(async move {
 			if let Err(e) = Job::run(
-				parent_hash,
-				span,
+				leaf,
 				run_args,
 				metrics,
 				to_job_rx,
@@ -586,9 +596,9 @@ where
 			)
 			.await
 			{
-				tracing::error!(
+				gum::error!(
 					job = Job::NAME,
-					parent_hash = %parent_hash,
+					parent_hash = %hash,
 					err = ?e,
 					"job finished with an error",
 				);
@@ -608,7 +618,7 @@ where
 
 		let handle = JobHandle { _abort_handle: AbortOnDrop(abort_handle), to_job: to_job_tx };
 
-		self.running.insert(parent_hash, handle);
+		self.running.insert(hash, handle);
 	}
 
 	/// Stop the job associated with this `parent_hash`.
@@ -710,8 +720,7 @@ impl<Job: JobTrait, Spawner> JobSubsystem<Job, Spawner> {
 							for activated in activated {
 								let sender = ctx.sender().clone();
 								jobs.spawn_job::<Job, _>(
-									activated.hash,
-									activated.span,
+									activated,
 									run_args.clone(),
 									metrics.clone(),
 									sender,
@@ -733,7 +742,7 @@ impl<Job: JobTrait, Spawner> JobSubsystem<Job, Spawner> {
 							}
 						}
 						Err(err) => {
-							tracing::error!(
+							gum::error!(
 								job = Job::NAME,
 								err = ?err,
 								"error receiving message from subsystem context for job",
@@ -752,7 +761,7 @@ impl<Job: JobTrait, Spawner> JobSubsystem<Job, Spawner> {
 					};
 
 					if let Err(e) = res {
-						tracing::warn!(err = ?e, "failed to handle command from job");
+						gum::warn!(err = ?e, "failed to handle command from job");
 					}
 				}
 				complete => break,

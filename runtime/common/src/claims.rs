@@ -23,7 +23,7 @@ use frame_support::{
 };
 pub use pallet::*;
 use parity_scale_codec::{Decode, Encode};
-use primitives::v1::ValidityError;
+use primitives::v2::ValidityError;
 use scale_info::TypeInfo;
 #[cfg(feature = "std")]
 use serde::{self, Deserialize, Deserializer, Serialize, Serializer};
@@ -165,6 +165,7 @@ pub mod pallet {
 
 	#[pallet::pallet]
 	#[pallet::generate_store(pub(super) trait Store)]
+	#[pallet::without_storage_info]
 	pub struct Pallet<T>(_);
 
 	/// Configuration trait.
@@ -633,6 +634,16 @@ where
 		Ok(())
 	}
 
+	fn pre_dispatch(
+		self,
+		who: &Self::AccountId,
+		call: &Self::Call,
+		info: &DispatchInfoOf<Self::Call>,
+		len: usize,
+	) -> Result<Self::Pre, TransactionValidityError> {
+		Ok(self.validate(who, call, info, len).map(|_| ())?)
+	}
+
 	// <weight>
 	// The weight of this logic is included in the `attest` dispatchable.
 	// </weight>
@@ -755,6 +766,7 @@ mod tests {
 		type SystemWeightInfo = ();
 		type SS58Prefix = ();
 		type OnSetCode = ();
+		type MaxConsumers = frame_support::traits::ConstU32<16>;
 	}
 
 	parameter_types! {

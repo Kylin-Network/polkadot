@@ -16,16 +16,19 @@
 
 //! Helper functions and tools to generate mock data useful for testing this subsystem.
 
-use std::{convert::TryFrom, sync::Arc};
+use std::sync::Arc;
 
 use sp_keyring::Sr25519Keyring;
 
 use polkadot_erasure_coding::{branches, obtain_chunks_v1 as obtain_chunks};
 use polkadot_node_primitives::{AvailableData, BlockData, ErasureChunk, PoV, Proof};
-use polkadot_primitives::v1::{
+use polkadot_primitives::v2::{
 	CandidateCommitments, CandidateDescriptor, CandidateHash, CommittedCandidateReceipt,
 	GroupIndex, Hash, HeadData, Id as ParaId, OccupiedCore, PersistedValidationData, SessionInfo,
 	ValidatorIndex,
+};
+use polkadot_primitives_test_helpers::{
+	dummy_collator, dummy_collator_signature, dummy_hash, dummy_validation_code,
 };
 
 /// Create dummy session info with two validator groups.
@@ -58,6 +61,9 @@ pub fn make_session_info() -> SessionInfo {
 		n_delay_tranches: 0,
 		no_show_slots: 0,
 		needed_approvals: 0,
+		active_validator_indices: Vec::new(),
+		dispute_period: 6,
+		random_seed: [0u8; 32],
 	}
 }
 
@@ -114,7 +120,11 @@ impl TestCandidateBuilder {
 				pov_hash: self.pov_hash,
 				relay_parent: self.relay_parent,
 				erasure_root: self.erasure_root,
-				..Default::default()
+				collator: dummy_collator(),
+				persisted_validation_data_hash: dummy_hash(),
+				signature: dummy_collator_signature(),
+				para_head: dummy_hash(),
+				validation_code_hash: dummy_validation_code().hash(),
 			},
 			commitments: CandidateCommitments { head_data: self.head_data, ..Default::default() },
 		}

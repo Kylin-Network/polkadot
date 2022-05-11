@@ -41,7 +41,7 @@ use polkadot_node_network_protocol::{
 	IfDisconnected,
 };
 use polkadot_node_primitives::{CandidateVotes, UncheckedDisputeMessage};
-use polkadot_primitives::v1::{
+use polkadot_primitives::v2::{
 	AuthorityDiscoveryId, CandidateHash, Hash, SessionIndex, SessionInfo,
 };
 use polkadot_subsystem::{
@@ -175,7 +175,7 @@ fn received_request_triggers_import() {
 							assert_matches!(
 								rx_response.await,
 								Err(err) => {
-									tracing::trace!(
+									gum::trace!(
 										target: LOG_TARGET,
 										?err,
 										"Request got dropped - other request already in flight"
@@ -197,7 +197,7 @@ fn received_request_triggers_import() {
 							assert_matches!(
 								rx_response.await,
 								Err(err) => {
-									tracing::trace!(
+									gum::trace!(
 										target: LOG_TARGET,
 										?err,
 										"Request got dropped - other request already in flight"
@@ -223,7 +223,7 @@ fn received_request_triggers_import() {
 			assert_matches!(
 				rx_response.await,
 				Err(err) => {
-					tracing::trace!(
+					gum::trace!(
 						target: LOG_TARGET,
 						?err,
 						"Request got dropped - peer is banned."
@@ -244,7 +244,7 @@ fn received_request_triggers_import() {
 		)
 		.await;
 
-		tracing::trace!(target: LOG_TARGET, "Concluding.");
+		gum::trace!(target: LOG_TARGET, "Concluding.");
 		conclude(&mut handle).await;
 	};
 	test_harness(test);
@@ -363,7 +363,7 @@ fn send_dispute_gets_cleaned_up() {
 		)
 		.await;
 
-		// Yield, so subsystem can make progess:
+		// Yield, so subsystem can make progress:
 		Delay::new(Duration::from_millis(2)).await;
 
 		conclude(&mut handle).await;
@@ -526,7 +526,7 @@ async fn nested_network_dispute_request<'a, F, O>(
 				candidate_receipt,
 				session,
 				statements,
-				pending_confirmation,
+				pending_confirmation: Some(pending_confirmation),
 			}
 		) => {
 			assert_eq!(session, MOCK_SESSION_INDEX);
@@ -562,7 +562,7 @@ async fn nested_network_dispute_request<'a, F, O>(
 					if let Some(sent_feedback) = sent_feedback {
 						sent_feedback.send(()).unwrap();
 					}
-					tracing::trace!(
+					gum::trace!(
 						target: LOG_TARGET,
 						"Valid import happened."
 					);
@@ -582,7 +582,7 @@ async fn conclude(handle: &mut TestSubsystemContextHandle<DisputeDistributionMes
 	poll_fn(|ctx| {
 		let fut = handle.recv();
 		pin_mut!(fut);
-		// No requests should be inititated, as there is no longer any dispute active:
+		// No requests should be initiated, as there is no longer any dispute active:
 		assert_matches!(fut.poll(ctx), Poll::Pending, "No requests expected");
 		Poll::Ready(())
 	})
@@ -668,7 +668,7 @@ async fn check_sent_requests(
 			let reqs: Vec<_> = reqs.into_iter().map(|r|
 				assert_matches!(
 					r,
-					Requests::DisputeSending(req) => {req}
+					Requests::DisputeSendingV1(req) => {req}
 				)
 			)
 			.collect();
@@ -735,7 +735,7 @@ where
 		match subsystem.run(ctx).await {
 			Ok(()) => {},
 			Err(fatal) => {
-				tracing::debug!(
+				gum::debug!(
 					target: LOG_TARGET,
 					?fatal,
 					"Dispute distribution exited with fatal error."

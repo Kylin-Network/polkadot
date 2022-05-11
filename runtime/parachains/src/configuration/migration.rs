@@ -16,13 +16,10 @@
 
 //! A module that is responsible for migration of storage.
 
-use crate::configuration::Config;
-use frame_support::{traits::StorageVersion, weights::Weight};
+use frame_support::traits::StorageVersion;
 
 /// The current storage version.
-pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
-
-/// Migrates the pallet storage to the most recent version, checking and setting the `StorageVersion`.
-pub fn migrate_to_latest<T: Config>() -> Weight {
-	0
-}
+///
+/// v0-v1: https://github.com/paritytech/polkadot/pull/3575
+/// v1-v2: https://github.com/paritytech/polkadot/pull/4420
+pub const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);

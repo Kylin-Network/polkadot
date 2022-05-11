@@ -16,9 +16,9 @@
 
 //! A malus or nemesis node launch code.
 
+use clap::Parser;
 use color_eyre::eyre;
 use polkadot_cli::{Cli, RunCmd};
-use structopt::StructOpt;
 
 pub(crate) mod interceptor;
 pub(crate) mod shared;
@@ -28,30 +28,30 @@ mod variants;
 use variants::*;
 
 /// Define the different variants of behavior.
-#[derive(Debug, StructOpt)]
-#[structopt(about = "Malus - the nemesis of polkadot.")]
-#[structopt(rename_all = "kebab-case")]
+#[derive(Debug, Parser)]
+#[clap(about = "Malus - the nemesis of polkadot.", version)]
+#[clap(rename_all = "kebab-case")]
 enum NemesisVariant {
 	/// Suggest a candidate with an invalid proof of validity.
 	SuggestGarbageCandidate(RunCmd),
 	/// Back a candidate with a specifically crafted proof of validity.
 	BackGarbageCandidate(RunCmd),
 	/// Delayed disputing of ancestors that are perfectly fine.
-	DisputeAncestor(RunCmd),
+	DisputeAncestor(DisputeAncestorOptions),
 
 	#[allow(missing_docs)]
-	#[structopt(name = "prepare-worker", setting = structopt::clap::AppSettings::Hidden)]
+	#[clap(name = "prepare-worker", hide = true)]
 	PvfPrepareWorker(polkadot_cli::ValidationWorkerCommand),
 
 	#[allow(missing_docs)]
-	#[structopt(name = "execute-worker", setting = structopt::clap::AppSettings::Hidden)]
+	#[clap(name = "execute-worker", hide = true)]
 	PvfExecuteWorker(polkadot_cli::ValidationWorkerCommand),
 }
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, Parser)]
 #[allow(missing_docs)]
 struct MalusCli {
-	#[structopt(subcommand)]
+	#[clap(subcommand)]
 	pub variant: NemesisVariant,
 }
 
@@ -66,9 +66,11 @@ impl MalusCli {
 			NemesisVariant::BackGarbageCandidate(cmd) =>
 				polkadot_cli::run_node(run_cmd(cmd), BackGarbageCandidate)?,
 			NemesisVariant::SuggestGarbageCandidate(cmd) =>
-				polkadot_cli::run_node(run_cmd(cmd), SuggestGarbageCandidate)?,
-			NemesisVariant::DisputeAncestor(cmd) =>
-				polkadot_cli::run_node(run_cmd(cmd), DisputeValidCandidates)?,
+				polkadot_cli::run_node(run_cmd(cmd), BackGarbageCandidateWrapper)?,
+			NemesisVariant::DisputeAncestor(opts) => polkadot_cli::run_node(
+				run_cmd(opts.clone().cmd),
+				DisputeValidCandidates::new(opts),
+			)?,
 			NemesisVariant::PvfPrepareWorker(cmd) => {
 				#[cfg(target_os = "android")]
 				{
@@ -99,7 +101,7 @@ impl MalusCli {
 
 fn main() -> eyre::Result<()> {
 	color_eyre::install()?;
-	let cli = MalusCli::from_args();
+	let cli = MalusCli::parse();
 	cli.launch()?;
 	Ok(())
 }
@@ -110,7 +112,7 @@ mod tests {
 
 	#[test]
 	fn subcommand_works() {
-		let cli = MalusCli::from_iter_safe(IntoIterator::into_iter([
+		let cli = MalusCli::try_parse_from(IntoIterator::into_iter([
 			"malus",
 			"dispute-ancestor",
 			"--bob",
@@ -120,7 +122,7 @@ mod tests {
 			variant: NemesisVariant::DisputeAncestor(run),
 			..
 		} => {
-			assert!(run.base.bob);
+			assert!(run.cmd.base.bob);
 		});
 	}
 }

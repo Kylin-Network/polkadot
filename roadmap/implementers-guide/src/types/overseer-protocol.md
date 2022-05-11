@@ -70,6 +70,7 @@ enum AllMessages {
     GossipSupport(GossipSupportMessage),
     DisputeCoordinator(DisputeCoordinatorMessage),
     ChainSelection(ChainSelectionMessage),
+    PvfChecker(PvfCheckerMessage),
 }
 ```
 
@@ -174,6 +175,8 @@ struct BlockApprovalMeta {
     candidates: Vec<CandidateHash>,
     /// The consensus slot of the block.
     slot: Slot,
+    /// The session of the block.
+    session: SessionIndex,
 }
 
 enum ApprovalDistributionMessage {
@@ -190,7 +193,7 @@ enum ApprovalDistributionMessage {
     /// the message.
     DistributeApproval(IndirectSignedApprovalVote),
     /// An update from the network bridge.
-    NetworkBridgeUpdateV1(NetworkBridgeEvent<ApprovalDistributionV1Message>),
+    NetworkBridgeUpdate(NetworkBridgeEvent<ApprovalDistributionV1Message>),
 }
 ```
 
@@ -281,7 +284,7 @@ enum BitfieldDistributionMessage {
     /// The bitfield distribution subsystem will assume this is indeed correctly signed.
     DistributeBitfield(relay_parent, SignedAvailabilityBitfield),
     /// Receive a network bridge update.
-    NetworkBridgeUpdateV1(NetworkBridgeEvent<BitfieldDistributionV1Message>),
+    NetworkBridgeUpdate(NetworkBridgeEvent<BitfieldDistributionV1Message>),
 }
 ```
 
@@ -552,9 +555,14 @@ enum NetworkBridgeMessage {
     /// Inform the distribution subsystems about the new
     /// gossip network topology formed.
     NewGossipTopology {
-        /// Ids of our neighbors in the new gossip topology.
-        /// We're not necessarily connected to all of them, but we should.
-        our_neighbors: HashSet<AuthorityDiscoveryId>,
+        /// The session this topology corresponds to.
+        session: SessionIndex,
+        /// Ids of our neighbors in the X dimension of the new gossip topology.
+        /// We're not necessarily connected to all of them, but we should try to be.
+        our_neighbors_x: HashSet<AuthorityDiscoveryId>,
+        /// Ids of our neighbors in the Y dimension of the new gossip topology.
+        /// We're not necessarily connected to all of them, but we should try to be.
+        our_neighbors_y: HashSet<AuthorityDiscoveryId>,
     }
 }
 ```
@@ -635,7 +643,7 @@ enum PoVDistributionMessage {
     /// The PoV should correctly hash to the PoV hash mentioned in the CandidateDescriptor
     DistributePoV(Hash, CandidateDescriptor, PoV),
     /// An update from the network bridge.
-    NetworkBridgeUpdateV1(NetworkBridgeEvent<PoVDistributionV1Message>),
+    NetworkBridgeUpdate(NetworkBridgeEvent<PoVDistributionV1Message>),
 }
 ```
 
@@ -678,6 +686,8 @@ This is fueled by an auxiliary type encapsulating all request types defined in t
 
 ```rust
 enum RuntimeApiRequest {
+    /// Get the version of the runtime API at the given parent hash, if any.
+    Version(ResponseChannel<u32>),
     /// Get the current validator set.
     Validators(ResponseChannel<Vec<ValidatorId>>),
     /// Get the validator groups and rotation info.
@@ -722,6 +732,8 @@ enum RuntimeApiRequest {
 enum RuntimeApiMessage {
     /// Make a request of the runtime API against the post-state of the given relay-parent.
     Request(Hash, RuntimeApiRequest),
+    /// Get the version of the runtime API at the given parent hash, if any.
+    Version(Hash, ResponseChannel<Option<u32>>)
 }
 ```
 
@@ -735,7 +747,7 @@ This is a network protocol that receives messages of type [`StatementDistributio
 ```rust
 enum StatementDistributionMessage {
     /// An update from the network bridge.
-    NetworkBridgeUpdateV1(NetworkBridgeEvent<StatementDistributionV1Message>),
+    NetworkBridgeUpdate(NetworkBridgeEvent<StatementDistributionV1Message>),
     /// We have validated a candidate and want to share our judgment with our peers.
     /// The hash is the relay parent.
     ///
@@ -750,6 +762,25 @@ enum StatementDistributionMessage {
 Various modules request that the [Candidate Validation subsystem](../node/utility/candidate-validation.md) validate a block with this message. It returns [`ValidationOutputs`](candidate.md#validationoutputs) for successful validation.
 
 ```rust
+
+/// The outcome of the candidate-validation's PVF pre-check request.
+pub enum PreCheckOutcome {
+    /// The PVF has been compiled successfully within the given constraints.
+    Valid,
+    /// The PVF could not be compiled. This variant is used when the candidate-validation subsystem
+    /// can be sure that the PVF is invalid. To give a couple of examples: a PVF that cannot be
+    /// decompressed or that does not represent a structurally valid WebAssembly file.
+    Invalid,
+    /// This variant is used when the PVF cannot be compiled but for other reasons that are not
+    /// included into [`PreCheckOutcome::Invalid`]. This variant can indicate that the PVF in
+    /// question is invalid, however it is not necessary that PVF that received this judgement
+    /// is invalid.
+    ///
+    /// For example, if during compilation the preparation worker was killed we cannot be sure why
+    /// it happened: because the PVF was malicious made the worker to use too much memory or its
+    /// because the host machine is under severe memory pressure and it decided to kill the worker.
+    Failed,
+}
 
 /// Result of the validation of the candidate.
 enum ValidationResult {
@@ -805,7 +836,27 @@ pub enum CandidateValidationMessage {
         Duration, // Execution timeout.
         oneshot::Sender<Result<ValidationResult, ValidationFailed>>,
     ),
+    /// Try to compile the given validation code and send back
+    /// the outcome.
+    ///
+    /// The validation code is specified by the hash and will be queried from the runtime API at the
+    /// given relay-parent.
+    PreCheck(
+        // Relay-parent
+        Hash,
+        ValidationCodeHash,
+        oneshot::Sender<PreCheckOutcome>,
+    ),
 }
+```
+
+## PVF Pre-checker Message
+
+Currently, the PVF pre-checker subsystem receives no specific messages.
+
+```rust
+/// Non-instantiable message type
+pub enum PvfCheckerMessage { }
 ```
 
 [NBE]: ../network.md#network-bridge-event

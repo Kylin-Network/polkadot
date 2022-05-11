@@ -16,13 +16,10 @@
 
 use bp_header_chain::find_grandpa_authorities_scheduled_change;
 use finality_relay::SourceHeader as FinalitySourceHeader;
-use headers_relay::sync_types::SourceHeader;
-use num_traits::{CheckedSub, One};
-use relay_utils::HeaderId;
 use sp_runtime::traits::Header as HeaderT;
 
 /// Generic wrapper for `sp_runtime::traits::Header` based headers, that
-/// implements `headers_relay::sync_types::SourceHeader` and may be used in headers sync directly.
+/// implements `finality_relay::SourceHeader` and may be used in headers sync directly.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SyncHeader<Header>(Header);
 
@@ -47,22 +44,11 @@ impl<Header> From<Header> for SyncHeader<Header> {
 	}
 }
 
-impl<Header: HeaderT> SourceHeader<Header::Hash, Header::Number> for SyncHeader<Header> {
-	fn id(&self) -> HeaderId<Header::Hash, Header::Number> {
-		relay_utils::HeaderId(*self.0.number(), self.hash())
+impl<Header: HeaderT> FinalitySourceHeader<Header::Hash, Header::Number> for SyncHeader<Header> {
+	fn hash(&self) -> Header::Hash {
+		self.0.hash()
 	}
 
-	fn parent_id(&self) -> HeaderId<Header::Hash, Header::Number> {
-		relay_utils::HeaderId(
-			self.number()
-				.checked_sub(&One::one())
-				.expect("should never be called for genesis header"),
-			*self.parent_hash(),
-		)
-	}
-}
-
-impl<Header: HeaderT> FinalitySourceHeader<Header::Number> for SyncHeader<Header> {
 	fn number(&self) -> Header::Number {
 		*self.0.number()
 	}

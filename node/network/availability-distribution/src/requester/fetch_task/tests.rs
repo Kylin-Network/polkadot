@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with Polkadot.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, convert::TryFrom};
+use std::collections::HashMap;
 
 use parity_scale_codec::Encode;
 
@@ -30,7 +30,7 @@ use sp_keyring::Sr25519Keyring;
 
 use polkadot_node_network_protocol::request_response::{v1, Recipient};
 use polkadot_node_primitives::{BlockData, PoV, Proof};
-use polkadot_primitives::v1::{CandidateHash, ValidatorIndex};
+use polkadot_primitives::v2::{CandidateHash, ValidatorIndex};
 
 use super::*;
 use crate::{metrics::Metrics, tests::mock::get_valid_chunk_data};
@@ -235,7 +235,7 @@ impl TestRun {
 				let mut valid_responses = 0;
 				for req in reqs {
 					let req = match req {
-						Requests::ChunkFetching(req) => req,
+						Requests::ChunkFetchingV1(req) => req,
 						_ => panic!("Unexpected request"),
 					};
 					let response =
@@ -262,7 +262,7 @@ impl TestRun {
 				return true
 			},
 			_ => {
-				tracing::debug!(target: LOG_TARGET, "Unexpected message");
+				gum::debug!(target: LOG_TARGET, "Unexpected message");
 				return false
 			},
 		}

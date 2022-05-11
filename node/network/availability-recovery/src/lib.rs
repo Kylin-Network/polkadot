@@ -35,19 +35,20 @@ use futures::{
 use lru::LruCache;
 use rand::seq::SliceRandom;
 
+use fatality::Nested;
 use polkadot_erasure_coding::{branch_hash, branches, obtain_chunks_v1, recovery_threshold};
 #[cfg(not(test))]
 use polkadot_node_network_protocol::request_response::CHUNK_REQUEST_TIMEOUT;
 use polkadot_node_network_protocol::{
 	request_response::{
-		self as req_res, incoming, outgoing::RequestError, v1 as request_v1,
-		IncomingRequestReceiver, OutgoingRequest, Recipient, Requests,
+		self as req_res, outgoing::RequestError, v1 as request_v1, IncomingRequestReceiver,
+		OutgoingRequest, Recipient, Requests,
 	},
 	IfDisconnected, UnifiedReputationChange as Rep,
 };
 use polkadot_node_primitives::{AvailableData, ErasureChunk};
 use polkadot_node_subsystem_util::request_session_info;
-use polkadot_primitives::v1::{
+use polkadot_primitives::v2::{
 	AuthorityDiscoveryId, BlakeTwo256, BlockNumber, CandidateHash, CandidateReceipt, GroupIndex,
 	Hash, HashT, SessionIndex, SessionInfo, ValidatorId, ValidatorIndex,
 };
@@ -178,7 +179,7 @@ impl RequestFromBackers {
 		params: &RecoveryParams,
 		sender: &mut impl SubsystemSender,
 	) -> Result<AvailableData, RecoveryError> {
-		tracing::trace!(
+		gum::trace!(
 			target: LOG_TARGET,
 			candidate_hash = ?params.candidate_hash,
 			erasure_root = ?params.erasure_root,
@@ -200,7 +201,7 @@ impl RequestFromBackers {
 			sender
 				.send_message(
 					NetworkBridgeMessage::SendRequests(
-						vec![Requests::AvailableDataFetching(req)],
+						vec![Requests::AvailableDataFetchingV1(req)],
 						IfDisconnected::ImmediateError,
 					)
 					.into(),
@@ -214,7 +215,7 @@ impl RequestFromBackers {
 						&params.erasure_root,
 						&data,
 					) {
-						tracing::trace!(
+						gum::trace!(
 							target: LOG_TARGET,
 							candidate_hash = ?params.candidate_hash,
 							"Received full data",
@@ -222,7 +223,7 @@ impl RequestFromBackers {
 
 						return Ok(data)
 					} else {
-						tracing::debug!(
+						gum::debug!(
 							target: LOG_TARGET,
 							candidate_hash = ?params.candidate_hash,
 							?validator_index,
@@ -233,7 +234,7 @@ impl RequestFromBackers {
 					}
 				},
 				Ok(req_res::v1::AvailableDataFetchingResponse::NoSuchData) => {},
-				Err(e) => tracing::debug!(
+				Err(e) => gum::debug!(
 					target: LOG_TARGET,
 					candidate_hash = ?params.candidate_hash,
 					?validator_index,
@@ -303,16 +304,29 @@ impl RequestChunksFromValidators {
 		sender: &mut impl SubsystemSender,
 	) {
 		let num_requests = self.get_desired_request_count(params.threshold);
-		let mut requests = Vec::with_capacity(num_requests - self.requesting_chunks.len());
+		let candidate_hash = &params.candidate_hash;
+		let already_requesting_count = self.requesting_chunks.len();
+
+		gum::debug!(
+			target: LOG_TARGET,
+			?candidate_hash,
+			?num_requests,
+			error_count= ?self.error_count,
+			total_received = ?self.total_received_responses,
+			threshold = ?params.threshold,
+			?already_requesting_count,
+			"Requesting availability chunks for a candidate",
+		);
+		let mut requests = Vec::with_capacity(num_requests - already_requesting_count);
 
 		while self.requesting_chunks.len() < num_requests {
 			if let Some(validator_index) = self.shuffling.pop_back() {
 				let validator = params.validator_authority_keys[validator_index.0 as usize].clone();
-				tracing::trace!(
+				gum::trace!(
 					target: LOG_TARGET,
 					?validator,
 					?validator_index,
-					candidate_hash = ?params.candidate_hash,
+					?candidate_hash,
 					"Requesting chunk",
 				);
 
@@ -324,7 +338,7 @@ impl RequestChunksFromValidators {
 
 				let (req, res) =
 					OutgoingRequest::new(Recipient::Authority(validator), raw_request.clone());
-				requests.push(Requests::ChunkFetching(req));
+				requests.push(Requests::ChunkFetchingV1(req));
 
 				params.metrics.on_chunk_request_issued();
 				let timer = params.metrics.time_chunk_request();
@@ -377,7 +391,7 @@ impl RequestChunksFromValidators {
 							metrics.on_chunk_request_invalid();
 							self.error_count += 1;
 
-							tracing::debug!(
+							gum::debug!(
 								target: LOG_TARGET,
 								candidate_hash = ?params.candidate_hash,
 								?validator_index,
@@ -386,7 +400,7 @@ impl RequestChunksFromValidators {
 						} else {
 							metrics.on_chunk_request_succeeded();
 
-							tracing::trace!(
+							gum::trace!(
 								target: LOG_TARGET,
 								candidate_hash = ?params.candidate_hash,
 								?validator_index,
@@ -398,7 +412,7 @@ impl RequestChunksFromValidators {
 						metrics.on_chunk_request_invalid();
 						self.error_count += 1;
 
-						tracing::debug!(
+						gum::debug!(
 							target: LOG_TARGET,
 							candidate_hash = ?params.candidate_hash,
 							?validator_index,
@@ -413,7 +427,7 @@ impl RequestChunksFromValidators {
 				Err((validator_index, e)) => {
 					self.error_count += 1;
 
-					tracing::debug!(
+					gum::trace!(
 						target: LOG_TARGET,
 						candidate_hash= ?params.candidate_hash,
 						err = ?e,
@@ -424,8 +438,18 @@ impl RequestChunksFromValidators {
 					match e {
 						RequestError::InvalidResponse(_) => {
 							metrics.on_chunk_request_invalid();
+
+							gum::debug!(
+								target: LOG_TARGET,
+								candidate_hash = ?params.candidate_hash,
+								err = ?e,
+								?validator_index,
+								"Chunk fetching response was invalid",
+							);
 						},
 						RequestError::NetworkError(err) => {
+							// No debug logs on general network errors - that became very spammy
+							// occasionally.
 							if let RequestFailure::Network(OutboundFailure::Timeout) = err {
 								metrics.on_chunk_request_timeout();
 							} else {
@@ -446,6 +470,14 @@ impl RequestChunksFromValidators {
 			// Stop waiting for requests when we either can already recover the data
 			// or have gotten firm 'No' responses from enough validators.
 			if self.can_conclude(params) {
+				gum::debug!(
+					target: LOG_TARGET,
+					candidate_hash = ?params.candidate_hash,
+					received_chunks_count = ?self.received_chunks.len(),
+					requested_chunks_count = ?self.requesting_chunks.len(),
+					threshold = ?params.threshold,
+					"Can conclude availability for a candidate",
+				);
 				break
 			}
 		}
@@ -456,6 +488,8 @@ impl RequestChunksFromValidators {
 		params: &RecoveryParams,
 		sender: &mut impl SubsystemSender,
 	) -> Result<AvailableData, RecoveryError> {
+		let metrics = &params.metrics;
+
 		// First query the store for any chunks we've got.
 		{
 			let (tx, rx) = oneshot::channel();
@@ -477,7 +511,7 @@ impl RequestChunksFromValidators {
 					}
 				},
 				Err(oneshot::Canceled) => {
-					tracing::warn!(
+					gum::warn!(
 						target: LOG_TARGET,
 						candidate_hash = ?params.candidate_hash,
 						"Failed to reach the availability store"
@@ -486,9 +520,11 @@ impl RequestChunksFromValidators {
 			}
 		}
 
+		let _recovery_timer = metrics.time_full_recovery();
+
 		loop {
 			if self.is_unavailable(&params) {
-				tracing::debug!(
+				gum::debug!(
 					target: LOG_TARGET,
 					candidate_hash = ?params.candidate_hash,
 					erasure_root = ?params.erasure_root,
@@ -498,6 +534,8 @@ impl RequestChunksFromValidators {
 					n_validators = %params.validators.len(),
 					"Data recovery is not possible",
 				);
+
+				metrics.on_recovery_failed();
 
 				return Err(RecoveryError::Unavailable)
 			}
@@ -509,6 +547,8 @@ impl RequestChunksFromValidators {
 			// If that fails, or a re-encoding of it doesn't match the expected erasure root,
 			// return Err(RecoveryError::Invalid)
 			if self.received_chunks.len() >= params.threshold {
+				let recovery_duration = metrics.time_erasure_recovery();
+
 				return match polkadot_erasure_coding::reconstruct_v1(
 					params.validators.len(),
 					self.received_chunks.values().map(|c| (&c.chunk[..], c.index.0 as usize)),
@@ -519,33 +559,38 @@ impl RequestChunksFromValidators {
 							&params.erasure_root,
 							&data,
 						) {
-							tracing::trace!(
+							gum::trace!(
 								target: LOG_TARGET,
 								candidate_hash = ?params.candidate_hash,
 								erasure_root = ?params.erasure_root,
 								"Data recovery complete",
 							);
+							metrics.on_recovery_succeeded();
 
 							Ok(data)
 						} else {
-							tracing::trace!(
+							recovery_duration.map(|rd| rd.stop_and_discard());
+							gum::trace!(
 								target: LOG_TARGET,
 								candidate_hash = ?params.candidate_hash,
 								erasure_root = ?params.erasure_root,
 								"Data recovery - root mismatch",
 							);
+							metrics.on_recovery_invalid();
 
 							Err(RecoveryError::Invalid)
 						}
 					},
 					Err(err) => {
-						tracing::trace!(
+						recovery_duration.map(|rd| rd.stop_and_discard());
+						gum::trace!(
 							target: LOG_TARGET,
 							candidate_hash = ?params.candidate_hash,
 							erasure_root = ?params.erasure_root,
 							?err,
 							"Data recovery error ",
 						);
+						metrics.on_recovery_invalid();
 
 						Err(RecoveryError::Invalid)
 					},
@@ -565,8 +610,20 @@ const fn is_unavailable(
 }
 
 /// Re-encode the data into erasure chunks in order to verify
-/// the root hash of the provided merkle tree, which is built
+/// the root hash of the provided Merkle tree, which is built
 /// on-top of the encoded chunks.
+///
+/// This (expensive) check is necessary, as otherwise we can't be sure that some chunks won't have
+/// been tampered with by the backers, which would result in some validators considering the data
+/// valid and some invalid as having fetched different set of chunks. The checking of the Merkle
+/// proof for individual chunks only gives us guarantees, that we have fetched a chunk belonging to
+/// a set the backers have committed to.
+///
+/// NOTE: It is fine to do this check with already decoded data, because if the decoding failed for
+/// some validators, we can be sure that chunks have been tampered with (by the backers) or the
+/// data was invalid to begin with. In the former case, validators fetching valid chunks will see
+/// invalid data as well, because the root won't match. In the latter case the situation is the
+/// same for anyone anyways.
 fn reconstructed_data_matches_root(
 	n_validators: usize,
 	expected_root: &Hash,
@@ -575,7 +632,7 @@ fn reconstructed_data_matches_root(
 	let chunks = match obtain_chunks_v1(n_validators, data) {
 		Ok(chunks) => chunks,
 		Err(e) => {
-			tracing::debug!(
+			gum::debug!(
 				target: LOG_TARGET,
 				err = ?e,
 				"Failed to obtain chunks",
@@ -605,7 +662,7 @@ impl<S: SubsystemSender> RecoveryTask<S> {
 				Ok(Some(data)) => return Ok(data),
 				Ok(None) => {},
 				Err(oneshot::Canceled) => {
-					tracing::warn!(
+					gum::warn!(
 						target: LOG_TARGET,
 						candidate_hash = ?self.params.candidate_hash,
 						"Failed to reach the availability store",
@@ -613,6 +670,8 @@ impl<S: SubsystemSender> RecoveryTask<S> {
 				},
 			}
 		}
+
+		self.params.metrics.on_recovery_started();
 
 		loop {
 			// These only fail if we cannot reach the underlying subsystem, which case there is nothing
@@ -655,7 +714,7 @@ impl Future for RecoveryHandle {
 
 		// these are reverse order, so remove is fine.
 		for index in indices_to_remove {
-			tracing::debug!(
+			gum::debug!(
 				target: LOG_TARGET,
 				candidate_hash = ?self.candidate_hash,
 				"Receiver for available data dropped.",
@@ -665,7 +724,7 @@ impl Future for RecoveryHandle {
 		}
 
 		if self.awaiting.is_empty() {
-			tracing::debug!(
+			gum::debug!(
 				target: LOG_TARGET,
 				candidate_hash = ?self.candidate_hash,
 				"All receivers for available data dropped.",
@@ -686,6 +745,38 @@ impl Future for RecoveryHandle {
 	}
 }
 
+/// Cached result of an availability recovery operation.
+#[derive(Debug, Clone)]
+enum CachedRecovery {
+	/// Availability was successfully retrieved before.
+	Valid(AvailableData),
+	/// Availability was successfully retrieved before, but was found to be invalid.
+	Invalid,
+}
+
+impl CachedRecovery {
+	/// Convert back to	`Result` to deliver responses.
+	fn into_result(self) -> Result<AvailableData, RecoveryError> {
+		match self {
+			Self::Valid(d) => Ok(d),
+			Self::Invalid => Err(RecoveryError::Invalid),
+		}
+	}
+}
+
+impl TryFrom<Result<AvailableData, RecoveryError>> for CachedRecovery {
+	type Error = ();
+	fn try_from(o: Result<AvailableData, RecoveryError>) -> Result<CachedRecovery, Self::Error> {
+		match o {
+			Ok(d) => Ok(Self::Valid(d)),
+			Err(RecoveryError::Invalid) => Ok(Self::Invalid),
+			// We don't want to cache unavailable state, as that state might change, so if
+			// requested again we want to try again!
+			Err(RecoveryError::Unavailable) => Err(()),
+		}
+	}
+}
+
 struct State {
 	/// Each recovery task is implemented as its own async task,
 	/// and these handles are for communicating with them.
@@ -695,7 +786,7 @@ struct State {
 	live_block: (BlockNumber, Hash),
 
 	/// An LRU cache of recently recovered data.
-	availability_lru: LruCache<CandidateHash, Result<AvailableData, RecoveryError>>,
+	availability_lru: LruCache<CandidateHash, CachedRecovery>,
 }
 
 impl Default for State {
@@ -783,7 +874,7 @@ where
 	});
 
 	if let Err(e) = ctx.spawn("recovery-task", Box::pin(remote)) {
-		tracing::warn!(
+		gum::warn!(
 			target: LOG_TARGET,
 			err = ?e,
 			"Failed to spawn a recovery task",
@@ -812,9 +903,11 @@ where
 	let span = jaeger::Span::new(candidate_hash, "availbility-recovery")
 		.with_stage(jaeger::Stage::AvailabilityRecovery);
 
-	if let Some(result) = state.availability_lru.get(&candidate_hash) {
-		if let Err(e) = response_sender.send(result.clone()) {
-			tracing::warn!(
+	if let Some(result) =
+		state.availability_lru.get(&candidate_hash).cloned().map(|v| v.into_result())
+	{
+		if let Err(e) = response_sender.send(result) {
+			gum::warn!(
 				target: LOG_TARGET,
 				err = ?e,
 				"Error responding with an availability recovery result",
@@ -850,7 +943,7 @@ where
 			)
 			.await,
 		None => {
-			tracing::warn!(target: LOG_TARGET, "SessionInfo is `None` at {:?}", state.live_block);
+			gum::warn!(target: LOG_TARGET, "SessionInfo is `None` at {:?}", state.live_block);
 			response_sender
 				.send(Err(RecoveryError::Unavailable))
 				.map_err(|_| error::Error::CanceledResponseSender)?;
@@ -930,7 +1023,7 @@ impl AvailabilityRecoverySubsystem {
 										response_sender,
 										&metrics,
 									).await {
-										tracing::warn!(
+										gum::warn!(
 											target: LOG_TARGET,
 											err = ?e,
 											"Error handling a recovery request",
@@ -942,14 +1035,14 @@ impl AvailabilityRecoverySubsystem {
 					}
 				}
 				in_req = recv_req => {
-					match in_req {
+					match in_req.into_nested().map_err(|fatal| SubsystemError::with_origin("availability-recovery", fatal))? {
 						Ok(req) => {
 							match query_full_data(&mut ctx, req.payload.candidate_hash).await {
 								Ok(res) => {
 									let _ = req.send_response(res.into());
 								}
 								Err(e) => {
-									tracing::debug!(
+									gum::debug!(
 										target: LOG_TARGET,
 										err = ?e,
 										"Failed to query available data.",
@@ -959,11 +1052,10 @@ impl AvailabilityRecoverySubsystem {
 								}
 							}
 						}
-						Err(incoming::Error::Fatal(f)) => return Err(SubsystemError::with_origin("availability-recovery", f)),
-						Err(incoming::Error::NonFatal(err)) => {
-							tracing::debug!(
+						Err(jfyi) => {
+							gum::debug!(
 								target: LOG_TARGET,
-								?err,
+								error = ?jfyi,
 								"Decoding incoming request failed"
 							);
 							continue
@@ -972,7 +1064,9 @@ impl AvailabilityRecoverySubsystem {
 				}
 				output = state.ongoing_recoveries.select_next_some() => {
 					if let Some((candidate_hash, result)) = output {
-						state.availability_lru.put(candidate_hash, result);
+						if let Ok(recovery) = CachedRecovery::try_from(result) {
+							state.availability_lru.put(candidate_hash, recovery);
+						}
 					}
 				}
 			}
