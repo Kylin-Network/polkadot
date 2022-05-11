@@ -85,7 +85,7 @@ impl ChunkResponse {
 
 impl IsRequest for ChunkFetchingRequest {
 	type Response = ChunkFetchingResponse;
-	const PROTOCOL: Protocol = Protocol::ChunkFetchingV1;
+	const PROTOCOL: Protocol = Protocol::ChunkFetching;
 }
 
 /// Request the advertised collation at that relay-parent.
@@ -107,7 +107,7 @@ pub enum CollationFetchingResponse {
 
 impl IsRequest for CollationFetchingRequest {
 	type Response = CollationFetchingResponse;
-	const PROTOCOL: Protocol = Protocol::CollationFetchingV1;
+	const PROTOCOL: Protocol = Protocol::CollationFetching;
 }
 
 /// Request the advertised collation at that relay-parent.
@@ -130,7 +130,7 @@ pub enum PoVFetchingResponse {
 
 impl IsRequest for PoVFetchingRequest {
 	type Response = PoVFetchingResponse;
-	const PROTOCOL: Protocol = Protocol::PoVFetchingV1;
+	const PROTOCOL: Protocol = Protocol::PoVFetching;
 }
 
 /// Request the entire available data for a candidate.
@@ -162,7 +162,7 @@ impl From<Option<AvailableData>> for AvailableDataFetchingResponse {
 
 impl IsRequest for AvailableDataFetchingRequest {
 	type Response = AvailableDataFetchingResponse;
-	const PROTOCOL: Protocol = Protocol::AvailableDataFetchingV1;
+	const PROTOCOL: Protocol = Protocol::AvailableDataFetching;
 }
 
 /// Request for fetching a large statement via request/response.
@@ -188,7 +188,7 @@ pub enum StatementFetchingResponse {
 
 impl IsRequest for StatementFetchingRequest {
 	type Response = StatementFetchingResponse;
-	const PROTOCOL: Protocol = Protocol::StatementFetchingV1;
+	const PROTOCOL: Protocol = Protocol::StatementFetching;
 }
 
 /// A dispute request.
@@ -213,5 +213,5 @@ pub enum DisputeResponse {
 
 impl IsRequest for DisputeRequest {
 	type Response = DisputeResponse;
-	const PROTOCOL: Protocol = Protocol::DisputeSendingV1;
+	const PROTOCOL: Protocol = Protocol::DisputeSending;
 }

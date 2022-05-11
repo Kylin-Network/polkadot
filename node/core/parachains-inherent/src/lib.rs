@@ -33,8 +33,6 @@ use sp_blockchain::HeaderBackend;
 use sp_runtime::generic::BlockId;
 use std::time;
 
-pub(crate) const LOG_TARGET: &str = "parachain::parachains-inherent";
-
 /// How long to wait for the provisioner, before giving up.
 const PROVISIONER_TIMEOUT: time::Duration = core::time::Duration::from_millis(2500);
 
@@ -96,7 +94,6 @@ impl ParachainsInherentDataProvider {
 			},
 			Err(err) => {
 				gum::debug!(
-					target: LOG_TARGET,
 					?err,
 					"Could not get provisioner inherent data; injecting default data",
 				);

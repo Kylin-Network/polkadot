@@ -1,6 +1,6 @@
 [package]
 name = "remote-ext-tests-bags-list"
-version = "0.9.19"
+version = "0.9.21"
 authors = ["Parity Technologies <admin@parity.io>"]
 edition = "2021"
 
@@ -12,11 +12,11 @@ polkadot-runtime-constants = { path = "../../../runtime/polkadot/constants" }
 kusama-runtime-constants = { path = "../../../runtime/kusama/constants" }
 westend-runtime-constants = { path = "../../../runtime/westend/constants" }
 
-pallet-bags-list-remote-tests = { git = "https://github.com/paritytech/substrate", branch = "master" }
-sp-tracing = { git = "https://github.com/paritytech/substrate", branch = "master" }
-frame-system = { git = "https://github.com/paritytech/substrate", branch = "master" }
-sp-core = { git = "https://github.com/paritytech/substrate", branch = "master" }
+pallet-bags-list-remote-tests = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.21" }
+sp-tracing = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.21" }
+frame-system = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.21" }
+sp-core = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.21" }
 
 clap = { version = "3.1", features = ["derive"] }
-log = "0.4.17"
-tokio = { version = "1.18.1", features = ["macros"] }
+log = "0.4.16"
+tokio = { version = "1.17.0", features = ["macros"] }

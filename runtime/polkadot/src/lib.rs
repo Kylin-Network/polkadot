@@ -106,7 +106,6 @@ include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
 // Polkadot version identifier;
 /// Runtime version (Polkadot).
-#[sp_version::runtime_version]
 pub const VERSION: RuntimeVersion = RuntimeVersion {
 	spec_name: create_runtime_str!("polkadot"),
 	impl_name: create_runtime_str!("parity-polkadot"),
@@ -442,14 +441,13 @@ parameter_types! {
 
 	// signed config
 	pub const SignedMaxSubmissions: u32 = 16;
-	pub const SignedMaxRefunds: u32 = 16 / 4;
 	// 40 DOTs fixed deposit..
 	pub const SignedDepositBase: Balance = deposit(2, 0);
 	// 0.01 DOT per KB of solution data.
 	pub const SignedDepositByte: Balance = deposit(0, 10) / 1024;
 	// Each good submission will get 1 DOT as reward
 	pub SignedRewardBase: Balance = 1 * UNITS;
-	pub BetterUnsignedThreshold: Perbill = Perbill::from_rational(5u32, 10_000);
+	pub SolutionImprovementThreshold: Perbill = Perbill::from_rational(5u32, 10_000);
 
 	// 4 hour session, 1 hour unsigned phase, 32 offchain executions.
 	pub OffchainRepeat: BlockNumber = UnsignedPhase::get() / 32;
@@ -486,7 +484,6 @@ impl pallet_election_provider_multi_phase::Config for Runtime {
 	type SignedPhase = SignedPhase;
 	type UnsignedPhase = UnsignedPhase;
 	type SignedMaxSubmissions = SignedMaxSubmissions;
-	type SignedMaxRefunds = SignedMaxRefunds;
 	type SignedRewardBase = SignedRewardBase;
 	type SignedDepositBase = SignedDepositBase;
 	type SignedDepositByte = SignedDepositByte;
@@ -494,8 +491,7 @@ impl pallet_election_provider_multi_phase::Config for Runtime {
 	type SignedMaxWeight = Self::MinerMaxWeight;
 	type SlashHandler = (); // burn slashes
 	type RewardHandler = (); // nothing to do upon rewards
-	type BetterUnsignedThreshold = BetterUnsignedThreshold;
-	type BetterSignedThreshold = ();
+	type SolutionImprovementThreshold = SolutionImprovementThreshold;
 	type MinerMaxWeight = OffchainSolutionWeightLimit; // For now use the one from staking.
 	type MinerMaxLength = OffchainSolutionLengthLimit;
 	type OffchainRepeat = OffchainRepeat;
@@ -1720,13 +1716,15 @@ sp_api::impl_runtime_apis! {
 		fn generate_proof(_leaf_index: u64)
 			-> Result<(mmr::EncodableOpaqueLeaf, mmr::Proof<Hash>), mmr::Error>
 		{
-			Err(mmr::Error::PalletNotIncluded)
+			// dummy implementation due to lack of MMR pallet.
+			Err(mmr::Error::GenerateProof)
 		}
 
 		fn verify_proof(_leaf: mmr::EncodableOpaqueLeaf, _proof: mmr::Proof<Hash>)
 			-> Result<(), mmr::Error>
 		{
-			Err(mmr::Error::PalletNotIncluded)
+			// dummy implementation due to lack of MMR pallet.
+			Err(mmr::Error::Verify)
 		}
 
 		fn verify_proof_stateless(
@@ -1734,31 +1732,13 @@ sp_api::impl_runtime_apis! {
 			_leaf: mmr::EncodableOpaqueLeaf,
 			_proof: mmr::Proof<Hash>
 		) -> Result<(), mmr::Error> {
-			Err(mmr::Error::PalletNotIncluded)
+			// dummy implementation due to lack of MMR pallet.
+			Err(mmr::Error::Verify)
 		}
 
 		fn mmr_root() -> Result<Hash, mmr::Error> {
-			Err(mmr::Error::PalletNotIncluded)
-		}
-
-		fn generate_batch_proof(_leaf_indices: Vec<u64>)
-			-> Result<(Vec<mmr::EncodableOpaqueLeaf>, mmr::BatchProof<Hash>), mmr::Error>
-		{
-			Err(mmr::Error::PalletNotIncluded)
-		}
-
-		fn verify_batch_proof(_leaves: Vec<mmr::EncodableOpaqueLeaf>, _proof: mmr::BatchProof<Hash>)
-			-> Result<(), mmr::Error>
-		{
-			Err(mmr::Error::PalletNotIncluded)
-		}
-
-		fn verify_batch_proof_stateless(
-			_root: Hash,
-			_leaves: Vec<mmr::EncodableOpaqueLeaf>,
-			_proof: mmr::BatchProof<Hash>
-		) -> Result<(), mmr::Error> {
-			Err(mmr::Error::PalletNotIncluded)
+			// dummy implementation due to lack of MMR pallet.
+			Err(mmr::Error::Verify)
 		}
 	}
 

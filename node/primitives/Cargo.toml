@@ -1,29 +1,25 @@
 [package]
 name = "polkadot-node-primitives"
-version = "0.9.19"
+version = "0.9.21"
 authors = ["Parity Technologies <admin@parity.io>"]
 edition = "2021"
 description = "Primitives types for the Node-side"
 
 [dependencies]
-bounded-vec = "0.6"
-<<<<<<< HEAD
-futures = "0.3.17"
-=======
+bounded-vec = "0.5"
 futures = "0.3.21"
->>>>>>> 904c61197f8c9107ccd6a14d5a203d3c43f489a7
 polkadot-primitives = { path = "../../primitives" }
 parity-scale-codec = { version = "3.1.2", default-features = false, features = ["derive"] }
-sp-core = { git = "https://github.com/paritytech/substrate", branch = "master" }
-sp-application-crypto = { git = "https://github.com/paritytech/substrate", branch = "master" }
-sp-consensus-vrf = { git = "https://github.com/paritytech/substrate", branch = "master" }
-sp-consensus-babe = { git = "https://github.com/paritytech/substrate", branch = "master" }
-sp-keystore = { git = "https://github.com/paritytech/substrate", branch = "master" }
-sp-maybe-compressed-blob = { git = "https://github.com/paritytech/substrate", branch = "master" }
+sp-core = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.21" }
+sp-application-crypto = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.21" }
+sp-consensus-vrf = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.21" }
+sp-consensus-babe = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.21" }
+sp-keystore = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.21" }
+sp-maybe-compressed-blob = { git = "https://github.com/paritytech/substrate", branch = "polkadot-v0.9.21" }
 polkadot-parachain = { path = "../../parachain", default-features = false }
 schnorrkel = "0.9.1"
-thiserror = "1.0.31"
-serde = { version = "1.0.137", features = ["derive"] }
+thiserror = "1.0.30"
+serde = { version = "1.0.136", features = ["derive"] }
 
 [target.'cfg(not(target_os = "unknown"))'.dependencies]
 zstd = { version = "0.10.0", default-features = false }

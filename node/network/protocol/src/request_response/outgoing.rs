@@ -29,29 +29,29 @@ use super::{v1, IsRequest, Protocol};
 #[derive(Debug)]
 pub enum Requests {
 	/// Request an availability chunk from a node.
-	ChunkFetchingV1(OutgoingRequest<v1::ChunkFetchingRequest>),
+	ChunkFetching(OutgoingRequest<v1::ChunkFetchingRequest>),
 	/// Fetch a collation from a collator which previously announced it.
-	CollationFetchingV1(OutgoingRequest<v1::CollationFetchingRequest>),
+	CollationFetching(OutgoingRequest<v1::CollationFetchingRequest>),
 	/// Fetch a PoV from a validator which previously sent out a seconded statement.
-	PoVFetchingV1(OutgoingRequest<v1::PoVFetchingRequest>),
+	PoVFetching(OutgoingRequest<v1::PoVFetchingRequest>),
 	/// Request full available data from a node.
-	AvailableDataFetchingV1(OutgoingRequest<v1::AvailableDataFetchingRequest>),
+	AvailableDataFetching(OutgoingRequest<v1::AvailableDataFetchingRequest>),
 	/// Requests for fetching large statements as part of statement distribution.
-	StatementFetchingV1(OutgoingRequest<v1::StatementFetchingRequest>),
+	StatementFetching(OutgoingRequest<v1::StatementFetchingRequest>),
 	/// Requests for notifying about an ongoing dispute.
-	DisputeSendingV1(OutgoingRequest<v1::DisputeRequest>),
+	DisputeSending(OutgoingRequest<v1::DisputeRequest>),
 }
 
 impl Requests {
 	/// Get the protocol this request conforms to.
 	pub fn get_protocol(&self) -> Protocol {
 		match self {
-			Self::ChunkFetchingV1(_) => Protocol::ChunkFetchingV1,
-			Self::CollationFetchingV1(_) => Protocol::CollationFetchingV1,
-			Self::PoVFetchingV1(_) => Protocol::PoVFetchingV1,
-			Self::AvailableDataFetchingV1(_) => Protocol::AvailableDataFetchingV1,
-			Self::StatementFetchingV1(_) => Protocol::StatementFetchingV1,
-			Self::DisputeSendingV1(_) => Protocol::DisputeSendingV1,
+			Self::ChunkFetching(_) => Protocol::ChunkFetching,
+			Self::CollationFetching(_) => Protocol::CollationFetching,
+			Self::PoVFetching(_) => Protocol::PoVFetching,
+			Self::AvailableDataFetching(_) => Protocol::AvailableDataFetching,
+			Self::StatementFetching(_) => Protocol::StatementFetching,
+			Self::DisputeSending(_) => Protocol::DisputeSending,
 		}
 	}
 
@@ -64,12 +64,12 @@ impl Requests {
 	/// contained in the `enum`.
 	pub fn encode_request(self) -> (Protocol, OutgoingRequest<Vec<u8>>) {
 		match self {
-			Self::ChunkFetchingV1(r) => r.encode_request(),
-			Self::CollationFetchingV1(r) => r.encode_request(),
-			Self::PoVFetchingV1(r) => r.encode_request(),
-			Self::AvailableDataFetchingV1(r) => r.encode_request(),
-			Self::StatementFetchingV1(r) => r.encode_request(),
-			Self::DisputeSendingV1(r) => r.encode_request(),
+			Self::ChunkFetching(r) => r.encode_request(),
+			Self::CollationFetching(r) => r.encode_request(),
+			Self::PoVFetching(r) => r.encode_request(),
+			Self::AvailableDataFetching(r) => r.encode_request(),
+			Self::StatementFetching(r) => r.encode_request(),
+			Self::DisputeSending(r) => r.encode_request(),
 		}
 	}
 }

@@ -60,17 +60,17 @@ pub mod v1;
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, EnumIter)]
 pub enum Protocol {
 	/// Protocol for chunk fetching, used by availability distribution and availability recovery.
-	ChunkFetchingV1,
+	ChunkFetching,
 	/// Protocol for fetching collations from collators.
-	CollationFetchingV1,
+	CollationFetching,
 	/// Protocol for fetching seconded PoVs from validators of the same group.
-	PoVFetchingV1,
+	PoVFetching,
 	/// Protocol for fetching available data.
-	AvailableDataFetchingV1,
+	AvailableDataFetching,
 	/// Fetching of statements that are too large for gossip.
-	StatementFetchingV1,
+	StatementFetching,
 	/// Sending of dispute statements with application level confirmations.
-	DisputeSendingV1,
+	DisputeSending,
 }
 
 /// Minimum bandwidth we expect for validators - 500Mbit/s is the recommendation, so approximately
@@ -111,12 +111,12 @@ pub const MAX_PARALLEL_STATEMENT_REQUESTS: u32 = 3;
 /// Response size limit for responses of POV like data.
 ///
 /// This is larger than `MAX_POV_SIZE` to account for protocol overhead and for additional data in
-/// `CollationFetchingV1` or `AvailableDataFetchingV1` for example. We try to err on larger limits here
+/// `CollationFetching` or `AvailableDataFetching` for example. We try to err on larger limits here
 /// as a too large limit only allows an attacker to waste our bandwidth some more, a too low limit
 /// might have more severe effects.
 const POV_RESPONSE_SIZE: u64 = MAX_POV_SIZE as u64 + 10_000;
 
-/// Maximum response sizes for `StatementFetchingV1`.
+/// Maximum response sizes for `StatementFetching`.
 ///
 /// This is `MAX_CODE_SIZE` plus some additional space for protocol overhead.
 const STATEMENT_RESPONSE_SIZE: u64 = MAX_CODE_SIZE as u64 + 10_000;
@@ -130,7 +130,7 @@ impl Protocol {
 		let p_name = self.into_protocol_name();
 		let (tx, rx) = mpsc::channel(self.get_channel_size());
 		let cfg = match self {
-			Protocol::ChunkFetchingV1 => RequestResponseConfig {
+			Protocol::ChunkFetching => RequestResponseConfig {
 				name: p_name,
 				max_request_size: 1_000,
 				max_response_size: POV_RESPONSE_SIZE as u64 * 3,
@@ -138,7 +138,7 @@ impl Protocol {
 				request_timeout: CHUNK_REQUEST_TIMEOUT,
 				inbound_queue: Some(tx),
 			},
-			Protocol::CollationFetchingV1 => RequestResponseConfig {
+			Protocol::CollationFetching => RequestResponseConfig {
 				name: p_name,
 				max_request_size: 1_000,
 				max_response_size: POV_RESPONSE_SIZE,
@@ -146,14 +146,14 @@ impl Protocol {
 				request_timeout: POV_REQUEST_TIMEOUT_CONNECTED,
 				inbound_queue: Some(tx),
 			},
-			Protocol::PoVFetchingV1 => RequestResponseConfig {
+			Protocol::PoVFetching => RequestResponseConfig {
 				name: p_name,
 				max_request_size: 1_000,
 				max_response_size: POV_RESPONSE_SIZE,
 				request_timeout: POV_REQUEST_TIMEOUT_CONNECTED,
 				inbound_queue: Some(tx),
 			},
-			Protocol::AvailableDataFetchingV1 => RequestResponseConfig {
+			Protocol::AvailableDataFetching => RequestResponseConfig {
 				name: p_name,
 				max_request_size: 1_000,
 				// Available data size is dominated by the PoV size.
@@ -161,7 +161,7 @@ impl Protocol {
 				request_timeout: POV_REQUEST_TIMEOUT_CONNECTED,
 				inbound_queue: Some(tx),
 			},
-			Protocol::StatementFetchingV1 => RequestResponseConfig {
+			Protocol::StatementFetching => RequestResponseConfig {
 				name: p_name,
 				max_request_size: 1_000,
 				// Available data size is dominated code size.
@@ -178,7 +178,7 @@ impl Protocol {
 				request_timeout: Duration::from_secs(1),
 				inbound_queue: Some(tx),
 			},
-			Protocol::DisputeSendingV1 => RequestResponseConfig {
+			Protocol::DisputeSending => RequestResponseConfig {
 				name: p_name,
 				max_request_size: 1_000,
 				/// Responses are just confirmation, in essence not even a bit. So 100 seems
@@ -201,18 +201,18 @@ impl Protocol {
 			// times (due to network delays), 100 seems big enough to accomodate for "bursts",
 			// assuming we can service requests relatively quickly, which would need to be measured
 			// as well.
-			Protocol::ChunkFetchingV1 => 100,
+			Protocol::ChunkFetching => 100,
 			// 10 seems reasonable, considering group sizes of max 10 validators.
-			Protocol::CollationFetchingV1 => 10,
+			Protocol::CollationFetching => 10,
 			// 10 seems reasonable, considering group sizes of max 10 validators.
-			Protocol::PoVFetchingV1 => 10,
+			Protocol::PoVFetching => 10,
 			// Validators are constantly self-selecting to request available data which may lead
 			// to constant load and occasional burstiness.
-			Protocol::AvailableDataFetchingV1 => 100,
+			Protocol::AvailableDataFetching => 100,
 			// Our queue size approximation is how many blocks of the size of
 			// a runtime we can transfer within a statements timeout, minus the requests we handle
 			// in parallel.
-			Protocol::StatementFetchingV1 => {
+			Protocol::StatementFetching => {
 				// We assume we can utilize up to 70% of the available bandwidth for statements.
 				// This is just a guess/estimate, with the following considerations: If we are
 				// faster than that, queue size will stay low anyway, even if not - requesters will
@@ -233,7 +233,7 @@ impl Protocol {
 			// Incoming requests can get bursty, we should also be able to handle them fast on
 			// average, so something in the ballpark of 100 should be fine. Nodes will retry on
 			// failure, so having a good value here is mostly about performance tuning.
-			Protocol::DisputeSendingV1 => 100,
+			Protocol::DisputeSending => 100,
 		}
 	}
 
@@ -245,12 +245,12 @@ impl Protocol {
 	/// Get the protocol name associated with each peer set as static str.
 	pub const fn get_protocol_name_static(self) -> &'static str {
 		match self {
-			Protocol::ChunkFetchingV1 => "/polkadot/req_chunk/1",
-			Protocol::CollationFetchingV1 => "/polkadot/req_collation/1",
-			Protocol::PoVFetchingV1 => "/polkadot/req_pov/1",
-			Protocol::AvailableDataFetchingV1 => "/polkadot/req_available_data/1",
-			Protocol::StatementFetchingV1 => "/polkadot/req_statement/1",
-			Protocol::DisputeSendingV1 => "/polkadot/send_dispute/1",
+			Protocol::ChunkFetching => "/polkadot/req_chunk/1",
+			Protocol::CollationFetching => "/polkadot/req_collation/1",
+			Protocol::PoVFetching => "/polkadot/req_pov/1",
+			Protocol::AvailableDataFetching => "/polkadot/req_available_data/1",
+			Protocol::StatementFetching => "/polkadot/req_statement/1",
+			Protocol::DisputeSending => "/polkadot/send_dispute/1",
 		}
 	}
 }

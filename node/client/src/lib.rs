@@ -26,7 +26,7 @@ use polkadot_primitives::{
 use sc_client_api::{AuxStore, Backend as BackendT, BlockchainEvents, KeyIterator, UsageProvider};
 use sc_executor::NativeElseWasmExecutor;
 use sp_api::{CallApiAt, Encode, NumberFor, ProvideRuntimeApi};
-use sp_blockchain::{HeaderBackend, HeaderMetadata};
+use sp_blockchain::HeaderBackend;
 use sp_consensus::BlockStatus;
 use sp_core::Pair;
 use sp_keyring::Sr25519Keyring;
@@ -173,7 +173,6 @@ pub trait AbstractClient<Block, Backend>:
 	+ CallApiAt<Block, StateBackend = Backend::State>
 	+ AuxStore
 	+ UsageProvider<Block>
-	+ HeaderMetadata<Block, Error = sp_blockchain::Error>
 where
 	Block: BlockT,
 	Backend: BackendT<Block>,
@@ -195,8 +194,7 @@ where
 		+ Sized
 		+ Send
 		+ Sync
-		+ CallApiAt<Block, StateBackend = Backend::State>
-		+ HeaderMetadata<Block, Error = sp_blockchain::Error>,
+		+ CallApiAt<Block, StateBackend = Backend::State>,
 	Client::Api: RuntimeApiCollection<StateBackend = Backend::State>,
 {
 }
@@ -378,16 +376,6 @@ impl sc_client_api::BlockBackend<Block> for Client {
 			client,
 			{
 				client.block_indexed_body(id)
-			}
-		}
-	}
-
-	fn requires_full_sync(&self) -> bool {
-		with_client! {
-			self,
-			client,
-			{
-				client.requires_full_sync()
 			}
 		}
 	}

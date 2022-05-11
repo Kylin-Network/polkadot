@@ -21,7 +21,7 @@ use polkadot_node_network_protocol::{our_view, view, ObservedRole};
 use polkadot_node_primitives::approval::{
 	AssignmentCertKind, VRFOutput, VRFProof, RELAY_VRF_MODULO_CONTEXT,
 };
-use polkadot_node_subsystem::messages::{network_bridge_event, AllMessages, ApprovalCheckError};
+use polkadot_node_subsystem::messages::{AllMessages, ApprovalCheckError};
 use polkadot_node_subsystem_test_helpers as test_helpers;
 use polkadot_node_subsystem_util::TimeoutExt as _;
 use polkadot_primitives::v2::{AuthorityDiscoveryId, BlakeTwo256, HashT};
@@ -75,7 +75,7 @@ fn test_harness<T: Future<Output = VirtualOverseer>>(
 	state
 }
 
-const TIMEOUT: Duration = Duration::from_millis(200);
+const TIMEOUT: Duration = Duration::from_millis(100);
 
 async fn overseer_send(overseer: &mut VirtualOverseer, msg: ApprovalDistributionMessage) {
 	gum::trace!(msg = ?msg, "Sending message");
@@ -157,7 +157,7 @@ async fn setup_gossip_topology(
 ) {
 	overseer_send(
 		virtual_overseer,
-		ApprovalDistributionMessage::NetworkBridgeUpdate(NetworkBridgeEvent::NewGossipTopology(
+		ApprovalDistributionMessage::NetworkBridgeUpdateV1(NetworkBridgeEvent::NewGossipTopology(
 			gossip_topology,
 		)),
 	)
@@ -171,17 +171,16 @@ async fn setup_peer_with_view(
 ) {
 	overseer_send(
 		virtual_overseer,
-		ApprovalDistributionMessage::NetworkBridgeUpdate(NetworkBridgeEvent::PeerConnected(
+		ApprovalDistributionMessage::NetworkBridgeUpdateV1(NetworkBridgeEvent::PeerConnected(
 			peer_id.clone(),
 			ObservedRole::Full,
-			1,
 			None,
 		)),
 	)
 	.await;
 	overseer_send(
 		virtual_overseer,
-		ApprovalDistributionMessage::NetworkBridgeUpdate(NetworkBridgeEvent::PeerViewChange(
+		ApprovalDistributionMessage::NetworkBridgeUpdateV1(NetworkBridgeEvent::PeerViewChange(
 			peer_id.clone(),
 			view,
 		)),
@@ -196,9 +195,9 @@ async fn send_message_from_peer(
 ) {
 	overseer_send(
 		virtual_overseer,
-		ApprovalDistributionMessage::NetworkBridgeUpdate(NetworkBridgeEvent::PeerMessage(
+		ApprovalDistributionMessage::NetworkBridgeUpdateV1(NetworkBridgeEvent::PeerMessage(
 			peer_id.clone(),
-			Versioned::V1(msg),
+			msg,
 		)),
 	)
 	.await;
@@ -301,9 +300,9 @@ fn try_import_the_same_assignment() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(assignments)
-				))
+				)
 			)) => {
 				assert_eq!(peers.len(), 2);
 				assert_eq!(assignments.len(), 1);
@@ -391,7 +390,7 @@ fn spam_attack_results_in_negative_reputation_change() {
 		// send a view update that removes block B from peer's view by bumping the finalized_number
 		overseer_send(
 			overseer,
-			ApprovalDistributionMessage::NetworkBridgeUpdate(NetworkBridgeEvent::PeerViewChange(
+			ApprovalDistributionMessage::NetworkBridgeUpdateV1(NetworkBridgeEvent::PeerViewChange(
 				peer.clone(),
 				View::with_finalized(2),
 			)),
@@ -451,7 +450,7 @@ fn peer_sending_us_the_same_we_just_sent_them_is_ok() {
 		// update peer view to include the hash
 		overseer_send(
 			overseer,
-			ApprovalDistributionMessage::NetworkBridgeUpdate(NetworkBridgeEvent::PeerViewChange(
+			ApprovalDistributionMessage::NetworkBridgeUpdateV1(NetworkBridgeEvent::PeerViewChange(
 				peer.clone(),
 				view![hash],
 			)),
@@ -463,9 +462,9 @@ fn peer_sending_us_the_same_we_just_sent_them_is_ok() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(assignments)
-				))
+				)
 			)) => {
 				assert_eq!(peers.len(), 1);
 				assert_eq!(assignments.len(), 1);
@@ -530,9 +529,9 @@ fn import_approval_happy_path() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(assignments)
-				))
+				)
 			)) => {
 				assert_eq!(peers.len(), 2);
 				assert_eq!(assignments.len(), 1);
@@ -566,9 +565,9 @@ fn import_approval_happy_path() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Approvals(approvals)
-				))
+				)
 			)) => {
 				assert_eq!(peers.len(), 1);
 				assert_eq!(approvals.len(), 1);
@@ -789,9 +788,9 @@ fn update_peer_view() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(assignments)
-				))
+				)
 			)) => {
 				assert_eq!(peers.len(), 1);
 				assert_eq!(assignments.len(), 1);
@@ -820,7 +819,7 @@ fn update_peer_view() {
 		// update peer's view
 		overseer_send(
 			overseer,
-			ApprovalDistributionMessage::NetworkBridgeUpdate(NetworkBridgeEvent::PeerViewChange(
+			ApprovalDistributionMessage::NetworkBridgeUpdateV1(NetworkBridgeEvent::PeerViewChange(
 				peer.clone(),
 				View::new(vec![hash_b, hash_c, hash_d], 2),
 			)),
@@ -840,9 +839,9 @@ fn update_peer_view() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(assignments)
-				))
+				)
 			)) => {
 				assert_eq!(peers.len(), 1);
 				assert_eq!(assignments.len(), 1);
@@ -873,7 +872,7 @@ fn update_peer_view() {
 		// update peer's view
 		overseer_send(
 			overseer,
-			ApprovalDistributionMessage::NetworkBridgeUpdate(NetworkBridgeEvent::PeerViewChange(
+			ApprovalDistributionMessage::NetworkBridgeUpdateV1(NetworkBridgeEvent::PeerViewChange(
 				peer.clone(),
 				View::with_finalized(finalized_number),
 			)),
@@ -1027,9 +1026,9 @@ fn sends_assignments_even_when_state_is_approved() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-				))
+				)
 			)) => {
 				assert_eq!(peers, vec![peer.clone()]);
 				assert_eq!(sent_assignments, assignments);
@@ -1040,9 +1039,9 @@ fn sends_assignments_even_when_state_is_approved() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Approvals(sent_approvals)
-				))
+				)
 			)) => {
 				assert_eq!(peers, vec![peer.clone()]);
 				assert_eq!(sent_approvals, approvals);
@@ -1087,7 +1086,7 @@ fn race_condition_in_local_vs_remote_view_update() {
 		// Send our view update to include a new head
 		overseer_send(
 			overseer,
-			ApprovalDistributionMessage::NetworkBridgeUpdate(NetworkBridgeEvent::OurViewChange(
+			ApprovalDistributionMessage::NetworkBridgeUpdateV1(NetworkBridgeEvent::OurViewChange(
 				our_view![hash_b],
 			)),
 		)
@@ -1202,9 +1201,9 @@ fn propagates_locally_generated_assignment_to_both_dimensions() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				sent_peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-				))
+				)
 			)) => {
 				assert_eq!(sent_peers.len(), expected_indices.len() + 4);
 				for &i in &expected_indices {
@@ -1223,9 +1222,9 @@ fn propagates_locally_generated_assignment_to_both_dimensions() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				sent_peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Approvals(sent_approvals)
-				))
+				)
 			)) => {
 				// Random sampling is reused from the assignment.
 				assert_eq!(sent_peers, assignment_sent_peers);
@@ -1306,9 +1305,9 @@ fn propagates_assignments_along_unshared_dimension() {
 				overseer_recv(overseer).await,
 				AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 					sent_peers,
-					Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+					protocol_v1::ValidationProtocol::ApprovalDistribution(
 						protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-					))
+					)
 				)) => {
 					assert_eq!(sent_peers.len(), expected_y.len() + 4);
 					for &i in &expected_y {
@@ -1355,9 +1354,9 @@ fn propagates_assignments_along_unshared_dimension() {
 				overseer_recv(overseer).await,
 				AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 					sent_peers,
-					Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+					protocol_v1::ValidationProtocol::ApprovalDistribution(
 						protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-					))
+					)
 				)) => {
 					assert_eq!(sent_peers.len(), expected_x.len() + 4);
 					for &i in &expected_x {
@@ -1450,9 +1449,9 @@ fn propagates_to_required_after_connect() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				sent_peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-				))
+				)
 			)) => {
 				assert_eq!(sent_peers.len(), expected_indices.len() + 4);
 				for &i in &expected_indices {
@@ -1471,9 +1470,9 @@ fn propagates_to_required_after_connect() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				sent_peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Approvals(sent_approvals)
-				))
+				)
 			)) => {
 				// Random sampling is reused from the assignment.
 				assert_eq!(sent_peers, assignment_sent_peers);
@@ -1488,9 +1487,9 @@ fn propagates_to_required_after_connect() {
 				overseer_recv(overseer).await,
 				AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 					sent_peers,
-					Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+					protocol_v1::ValidationProtocol::ApprovalDistribution(
 						protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-					))
+					)
 				)) => {
 					assert_eq!(sent_peers.len(), 1);
 					assert_eq!(&sent_peers[0], &peers[i].0);
@@ -1502,9 +1501,9 @@ fn propagates_to_required_after_connect() {
 				overseer_recv(overseer).await,
 				AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 					sent_peers,
-					Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+					protocol_v1::ValidationProtocol::ApprovalDistribution(
 						protocol_v1::ApprovalDistributionMessage::Approvals(sent_approvals)
-					))
+					)
 				)) => {
 					assert_eq!(sent_peers.len(), 1);
 					assert_eq!(&sent_peers[0], &peers[i].0);
@@ -1576,9 +1575,9 @@ fn sends_to_more_peers_after_getting_topology() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				sent_peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-				))
+				)
 			)) => {
 				// Only sends to random peers.
 				assert_eq!(sent_peers.len(), 4);
@@ -1598,9 +1597,9 @@ fn sends_to_more_peers_after_getting_topology() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				sent_peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Approvals(sent_approvals)
-				))
+				)
 			)) => {
 				// Random sampling is reused from the assignment.
 				assert_eq!(sent_peers, assignment_sent_peers);
@@ -1623,9 +1622,9 @@ fn sends_to_more_peers_after_getting_topology() {
 				overseer_recv(overseer).await,
 				AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 					sent_peers,
-					Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+					protocol_v1::ValidationProtocol::ApprovalDistribution(
 						protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-					))
+					)
 				)) => {
 					// Sends to all expected peers.
 					assert_eq!(sent_peers.len(), 1);
@@ -1644,9 +1643,9 @@ fn sends_to_more_peers_after_getting_topology() {
 				overseer_recv(overseer).await,
 				AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 					sent_peers,
-					Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+					protocol_v1::ValidationProtocol::ApprovalDistribution(
 						protocol_v1::ApprovalDistributionMessage::Approvals(sent_approvals)
-					))
+					)
 				)) => {
 					// Sends to all expected peers.
 					assert_eq!(sent_peers.len(), 1);
@@ -1734,9 +1733,9 @@ fn originator_aggression_l1() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				sent_peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(_)
-				))
+				)
 			)) => {
 				sent_peers.into_iter()
 					.filter_map(|sp| peers.iter().position(|p| &p.0 == &sp))
@@ -1748,9 +1747,9 @@ fn originator_aggression_l1() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				_,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Approvals(_)
-				))
+				)
 			)) => { }
 		);
 
@@ -1784,9 +1783,9 @@ fn originator_aggression_l1() {
 				overseer_recv(overseer).await,
 				AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 					sent_peers,
-					Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+					protocol_v1::ValidationProtocol::ApprovalDistribution(
 						protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-					))
+					)
 				)) => {
 					// Sends to all expected peers.
 					assert_eq!(sent_peers.len(), 1);
@@ -1804,9 +1803,9 @@ fn originator_aggression_l1() {
 				overseer_recv(overseer).await,
 				AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 					sent_peers,
-					Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+					protocol_v1::ValidationProtocol::ApprovalDistribution(
 						protocol_v1::ApprovalDistributionMessage::Approvals(sent_approvals)
-					))
+					)
 				)) => {
 					// Sends to all expected peers.
 					assert_eq!(sent_peers.len(), 1);
@@ -1893,9 +1892,9 @@ fn non_originator_aggression_l1() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				_,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(_)
-				))
+				)
 			)) => { }
 		);
 
@@ -1998,9 +1997,9 @@ fn non_originator_aggression_l2() {
 			overseer_recv(overseer).await,
 			AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 				sent_peers,
-				Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+				protocol_v1::ValidationProtocol::ApprovalDistribution(
 					protocol_v1::ApprovalDistributionMessage::Assignments(_)
-				))
+				)
 			)) => {
 				sent_peers.into_iter()
 					.filter_map(|sp| peers.iter().position(|p| &p.0 == &sp))
@@ -2068,9 +2067,9 @@ fn non_originator_aggression_l2() {
 				overseer_recv(overseer).await,
 				AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 					sent_peers,
-					Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+					protocol_v1::ValidationProtocol::ApprovalDistribution(
 						protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-					))
+					)
 				)) => {
 					// Sends to all expected peers.
 					assert_eq!(sent_peers.len(), 1);
@@ -2159,9 +2158,9 @@ fn resends_messages_periodically() {
 				overseer_recv(overseer).await,
 				AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 					sent_peers,
-					Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+					protocol_v1::ValidationProtocol::ApprovalDistribution(
 						protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-					))
+					)
 				)) => {
 					assert_eq!(sent_peers.len(), expected_y.len() + 4);
 					for &i in &expected_y {
@@ -2208,9 +2207,9 @@ fn resends_messages_periodically() {
 					overseer_recv(overseer).await,
 					AllMessages::NetworkBridge(NetworkBridgeMessage::SendValidationMessage(
 						sent_peers,
-						Versioned::V1(protocol_v1::ValidationProtocol::ApprovalDistribution(
+						protocol_v1::ValidationProtocol::ApprovalDistribution(
 							protocol_v1::ApprovalDistributionMessage::Assignments(sent_assignments)
-						))
+						)
 					)) => {
 						assert_eq!(sent_peers.len(), 1);
 						let expected_pos = expected_y.iter()

@@ -21,10 +21,10 @@ Input: [`NetworkBridgeMessage`][NBM]
 
 
 Output:
-	- [`ApprovalDistributionMessage`][AppD]`::NetworkBridgeUpdate`
-	- [`BitfieldDistributionMessage`][BitD]`::NetworkBridgeUpdate`
-	- [`CollatorProtocolMessage`][CollP]`::NetworkBridgeUpdate`
-	- [`StatementDistributionMessage`][StmtD]`::NetworkBridgeUpdate`
+	- [`ApprovalDistributionMessage`][AppD]`::NetworkBridgeUpdateV1`
+	- [`BitfieldDistributionMessage`][BitD]`::NetworkBridgeUpdateV1`
+	- [`CollatorProtocolMessage`][CollP]`::NetworkBridgeUpdateV1`
+	- [`StatementDistributionMessage`][StmtD]`::NetworkBridgeUpdateV1`
 
 ## Functionality
 
@@ -108,7 +108,7 @@ Map the message onto the corresponding [Event Handler](#event-handlers) based on
 
 ### `NewGossipTopology`
 
-- Map all `AuthorityDiscoveryId`s to `PeerId`s and issue a corresponding `NetworkBridgeUpdate`
+- Map all `AuthorityDiscoveryId`s to `PeerId`s and issue a corresponding `NetworkBridgeUpdateV1`
   to all validation subsystems.
 
 ## Event Handlers
@@ -117,13 +117,13 @@ Network bridge event handlers are the intended recipients of particular network 
 
 ### Validation V1
 
-* `ApprovalDistributionV1Message -> ApprovalDistributionMessage::NetworkBridgeUpdate`
-* `BitfieldDistributionV1Message -> BitfieldDistributionMessage::NetworkBridgeUpdate`
-* `StatementDistributionV1Message -> StatementDistributionMessage::NetworkBridgeUpdate`
+* `ApprovalDistributionV1Message -> ApprovalDistributionMessage::NetworkBridgeUpdateV1`
+* `BitfieldDistributionV1Message -> BitfieldDistributionMessage::NetworkBridgeUpdateV1`
+* `StatementDistributionV1Message -> StatementDistributionMessage::NetworkBridgeUpdateV1`
 
 ### Collation V1
 
-* `CollatorProtocolV1Message -> CollatorProtocolMessage::NetworkBridgeUpdate`
+* `CollatorProtocolV1Message -> CollatorProtocolMessage::NetworkBridgeUpdateV1`
 
 [NBM]: ../../types/overseer-protocol.md#network-bridge-message
 [AppD]: ../../types/overseer-protocol.md#approval-distribution-message

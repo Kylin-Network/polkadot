@@ -771,23 +771,23 @@ fn receiving_from_one_sends_to_another_and_to_candidate_backing() {
 		// notify of peers and view
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
-					NetworkBridgeEvent::PeerConnected(peer_a.clone(), ObservedRole::Full, 1, None),
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
+					NetworkBridgeEvent::PeerConnected(peer_a.clone(), ObservedRole::Full, None),
 				),
 			})
 			.await;
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
-					NetworkBridgeEvent::PeerConnected(peer_b.clone(), ObservedRole::Full, 1, None),
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
+					NetworkBridgeEvent::PeerConnected(peer_b.clone(), ObservedRole::Full, None),
 				),
 			})
 			.await;
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_a.clone(), view![hash_a]),
 				),
 			})
@@ -795,7 +795,7 @@ fn receiving_from_one_sends_to_another_and_to_candidate_backing() {
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_b.clone(), view![hash_a]),
 				),
 			})
@@ -830,13 +830,13 @@ fn receiving_from_one_sends_to_another_and_to_candidate_backing() {
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerMessage(
 						peer_a.clone(),
-						Versioned::V1(protocol_v1::StatementDistributionMessage::Statement(
+						protocol_v1::StatementDistributionMessage::Statement(
 							hash_a,
 							statement.clone().into(),
-						)),
+						),
 					),
 				),
 			})
@@ -861,9 +861,9 @@ fn receiving_from_one_sends_to_another_and_to_candidate_backing() {
 			AllMessages::NetworkBridge(
 				NetworkBridgeMessage::SendValidationMessage(
 					recipients,
-					Versioned::V1(protocol_v1::ValidationProtocol::StatementDistribution(
+					protocol_v1::ValidationProtocol::StatementDistribution(
 						protocol_v1::StatementDistributionMessage::Statement(r, s)
-					)),
+					),
 				)
 			) => {
 				assert_eq!(recipients, vec![peer_b.clone()]);
@@ -964,11 +964,10 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 		// notify of peers and view
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerConnected(
 						peer_a.clone(),
 						ObservedRole::Full,
-						1,
 						Some(HashSet::from([Sr25519Keyring::Alice.public().into()])),
 					),
 				),
@@ -977,11 +976,10 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerConnected(
 						peer_b.clone(),
 						ObservedRole::Full,
-						1,
 						Some(HashSet::from([Sr25519Keyring::Bob.public().into()])),
 					),
 				),
@@ -989,11 +987,10 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 			.await;
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerConnected(
 						peer_c.clone(),
 						ObservedRole::Full,
-						1,
 						Some(HashSet::from([Sr25519Keyring::Charlie.public().into()])),
 					),
 				),
@@ -1001,20 +998,15 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 			.await;
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
-					NetworkBridgeEvent::PeerConnected(
-						peer_bad.clone(),
-						ObservedRole::Full,
-						1,
-						None,
-					),
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
+					NetworkBridgeEvent::PeerConnected(peer_bad.clone(), ObservedRole::Full, None),
 				),
 			})
 			.await;
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_a.clone(), view![hash_a]),
 				),
 			})
@@ -1022,21 +1014,21 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_b.clone(), view![hash_a]),
 				),
 			})
 			.await;
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_c.clone(), view![hash_a]),
 				),
 			})
 			.await;
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_bad.clone(), view![hash_a]),
 				),
 			})
@@ -1074,12 +1066,10 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerMessage(
 						peer_a.clone(),
-						Versioned::V1(protocol_v1::StatementDistributionMessage::LargeStatement(
-							metadata.clone(),
-						)),
+						protocol_v1::StatementDistributionMessage::LargeStatement(metadata.clone()),
 					),
 				),
 			})
@@ -1094,7 +1084,7 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 			) => {
 				let reqs = reqs.pop().unwrap();
 				let outgoing = match reqs {
-					Requests::StatementFetchingV1(outgoing) => outgoing,
+					Requests::StatementFetching(outgoing) => outgoing,
 					_ => panic!("Unexpected request"),
 				};
 				let req = outgoing.payload;
@@ -1112,12 +1102,10 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerMessage(
 						peer_c.clone(),
-						Versioned::V1(protocol_v1::StatementDistributionMessage::LargeStatement(
-							metadata.clone(),
-						)),
+						protocol_v1::StatementDistributionMessage::LargeStatement(metadata.clone()),
 					),
 				),
 			})
@@ -1126,12 +1114,10 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 		// Malicious peer:
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerMessage(
 						peer_bad.clone(),
-						Versioned::V1(protocol_v1::StatementDistributionMessage::LargeStatement(
-							metadata.clone(),
-						)),
+						protocol_v1::StatementDistributionMessage::LargeStatement(metadata.clone()),
 					),
 				),
 			})
@@ -1147,7 +1133,7 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 			) => {
 				let reqs = reqs.pop().unwrap();
 				let outgoing = match reqs {
-					Requests::StatementFetchingV1(outgoing) => outgoing,
+					Requests::StatementFetching(outgoing) => outgoing,
 					_ => panic!("Unexpected request"),
 				};
 				let req = outgoing.payload;
@@ -1167,7 +1153,7 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 			) => {
 				let reqs = reqs.pop().unwrap();
 				let outgoing = match reqs {
-					Requests::StatementFetchingV1(outgoing) => outgoing,
+					Requests::StatementFetching(outgoing) => outgoing,
 					_ => panic!("Unexpected request"),
 				};
 				let req = outgoing.payload;
@@ -1188,7 +1174,7 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 			) => {
 				let reqs = reqs.pop().unwrap();
 				let outgoing = match reqs {
-					Requests::StatementFetchingV1(outgoing) => outgoing,
+					Requests::StatementFetching(outgoing) => outgoing,
 					_ => panic!("Unexpected request"),
 				};
 				let req = outgoing.payload;
@@ -1223,7 +1209,7 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 			) => {
 				let reqs = reqs.pop().unwrap();
 				let outgoing = match reqs {
-					Requests::StatementFetchingV1(outgoing) => outgoing,
+					Requests::StatementFetching(outgoing) => outgoing,
 					_ => panic!("Unexpected request"),
 				};
 				let req = outgoing.payload;
@@ -1244,7 +1230,7 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 			) => {
 				let reqs = reqs.pop().unwrap();
 				let outgoing = match reqs {
-					Requests::StatementFetchingV1(outgoing) => outgoing,
+					Requests::StatementFetching(outgoing) => outgoing,
 					_ => panic!("Unexpected request"),
 				};
 				let req = outgoing.payload;
@@ -1291,9 +1277,9 @@ fn receiving_large_statement_from_one_sends_to_another_and_to_candidate_backing(
 			AllMessages::NetworkBridge(
 				NetworkBridgeMessage::SendValidationMessage(
 					mut recipients,
-					Versioned::V1(protocol_v1::ValidationProtocol::StatementDistribution(
+					protocol_v1::ValidationProtocol::StatementDistribution(
 						protocol_v1::StatementDistributionMessage::LargeStatement(meta)
-					)),
+					),
 				)
 			) => {
 				gum::debug!(
@@ -1477,11 +1463,10 @@ fn share_prioritizes_backing_group() {
 		for (peer, pair) in dummy_peers.clone().into_iter().zip(dummy_pairs) {
 			handle
 				.send(FromOverseer::Communication {
-					msg: StatementDistributionMessage::NetworkBridgeUpdate(
+					msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 						NetworkBridgeEvent::PeerConnected(
 							peer,
 							ObservedRole::Full,
-							1,
 							Some(HashSet::from([pair.public().into()])),
 						),
 					),
@@ -1490,7 +1475,7 @@ fn share_prioritizes_backing_group() {
 
 			handle
 				.send(FromOverseer::Communication {
-					msg: StatementDistributionMessage::NetworkBridgeUpdate(
+					msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 						NetworkBridgeEvent::PeerViewChange(peer, view![hash_a]),
 					),
 				})
@@ -1500,11 +1485,10 @@ fn share_prioritizes_backing_group() {
 		// notify of peers and view
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerConnected(
 						peer_a.clone(),
 						ObservedRole::Full,
-						1,
 						Some(HashSet::from([Sr25519Keyring::Alice.public().into()])),
 					),
 				),
@@ -1512,11 +1496,10 @@ fn share_prioritizes_backing_group() {
 			.await;
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerConnected(
 						peer_b.clone(),
 						ObservedRole::Full,
-						1,
 						Some(HashSet::from([Sr25519Keyring::Bob.public().into()])),
 					),
 				),
@@ -1524,11 +1507,10 @@ fn share_prioritizes_backing_group() {
 			.await;
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerConnected(
 						peer_c.clone(),
 						ObservedRole::Full,
-						1,
 						Some(HashSet::from([Sr25519Keyring::Charlie.public().into()])),
 					),
 				),
@@ -1536,23 +1518,17 @@ fn share_prioritizes_backing_group() {
 			.await;
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
-					NetworkBridgeEvent::PeerConnected(
-						peer_bad.clone(),
-						ObservedRole::Full,
-						1,
-						None,
-					),
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
+					NetworkBridgeEvent::PeerConnected(peer_bad.clone(), ObservedRole::Full, None),
 				),
 			})
 			.await;
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerConnected(
 						peer_other_group.clone(),
 						ObservedRole::Full,
-						1,
 						Some(HashSet::from([Sr25519Keyring::Dave.public().into()])),
 					),
 				),
@@ -1561,7 +1537,7 @@ fn share_prioritizes_backing_group() {
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_a.clone(), view![hash_a]),
 				),
 			})
@@ -1569,28 +1545,28 @@ fn share_prioritizes_backing_group() {
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_b.clone(), view![hash_a]),
 				),
 			})
 			.await;
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_c.clone(), view![hash_a]),
 				),
 			})
 			.await;
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_bad.clone(), view![hash_a]),
 				),
 			})
 			.await;
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_other_group.clone(), view![hash_a]),
 				),
 			})
@@ -1638,9 +1614,9 @@ fn share_prioritizes_backing_group() {
 			AllMessages::NetworkBridge(
 				NetworkBridgeMessage::SendValidationMessage(
 					mut recipients,
-					Versioned::V1(protocol_v1::ValidationProtocol::StatementDistribution(
+					protocol_v1::ValidationProtocol::StatementDistribution(
 						protocol_v1::StatementDistributionMessage::LargeStatement(meta)
-					)),
+					),
 				)
 			) => {
 				gum::debug!(
@@ -1770,11 +1746,10 @@ fn peer_cant_flood_with_large_statements() {
 		// notify of peers and view
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerConnected(
 						peer_a.clone(),
 						ObservedRole::Full,
-						1,
 						Some(HashSet::from([Sr25519Keyring::Alice.public().into()])),
 					),
 				),
@@ -1783,7 +1758,7 @@ fn peer_cant_flood_with_large_statements() {
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerViewChange(peer_a.clone(), view![hash_a]),
 				),
 			})
@@ -1820,13 +1795,11 @@ fn peer_cant_flood_with_large_statements() {
 		for _ in 0..MAX_LARGE_STATEMENTS_PER_SENDER + 1 {
 			handle
 				.send(FromOverseer::Communication {
-					msg: StatementDistributionMessage::NetworkBridgeUpdate(
+					msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 						NetworkBridgeEvent::PeerMessage(
 							peer_a.clone(),
-							Versioned::V1(
-								protocol_v1::StatementDistributionMessage::LargeStatement(
-									metadata.clone(),
-								),
+							protocol_v1::StatementDistributionMessage::LargeStatement(
+								metadata.clone(),
 							),
 						),
 					),
@@ -1846,7 +1819,7 @@ fn peer_cant_flood_with_large_statements() {
 				)) => {
 					let reqs = reqs.pop().unwrap();
 					let outgoing = match reqs {
-						Requests::StatementFetchingV1(outgoing) => outgoing,
+						Requests::StatementFetching(outgoing) => outgoing,
 						_ => panic!("Unexpected request"),
 					};
 					let req = outgoing.payload;
@@ -1976,19 +1949,14 @@ fn handle_multiple_seconded_statements() {
 		for peer in all_peers.iter() {
 			handle
 				.send(FromOverseer::Communication {
-					msg: StatementDistributionMessage::NetworkBridgeUpdate(
-						NetworkBridgeEvent::PeerConnected(
-							peer.clone(),
-							ObservedRole::Full,
-							1,
-							None,
-						),
+					msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
+						NetworkBridgeEvent::PeerConnected(peer.clone(), ObservedRole::Full, None),
 					),
 				})
 				.await;
 			handle
 				.send(FromOverseer::Communication {
-					msg: StatementDistributionMessage::NetworkBridgeUpdate(
+					msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 						NetworkBridgeEvent::PeerViewChange(peer.clone(), view![relay_parent_hash]),
 					),
 				})
@@ -2023,7 +1991,7 @@ fn handle_multiple_seconded_statements() {
 
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::NewGossipTopology(gossip_topology),
 				),
 			})
@@ -2059,13 +2027,13 @@ fn handle_multiple_seconded_statements() {
 		// `PeerA` sends a `Seconded` message
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerMessage(
 						peer_a.clone(),
-						Versioned::V1(protocol_v1::StatementDistributionMessage::Statement(
+						protocol_v1::StatementDistributionMessage::Statement(
 							relay_parent_hash,
 							statement.clone().into(),
-						)),
+						),
 					),
 				),
 			})
@@ -2097,9 +2065,9 @@ fn handle_multiple_seconded_statements() {
 			AllMessages::NetworkBridge(
 				NetworkBridgeMessage::SendValidationMessage(
 					recipients,
-					Versioned::V1(protocol_v1::ValidationProtocol::StatementDistribution(
+					protocol_v1::ValidationProtocol::StatementDistribution(
 						protocol_v1::StatementDistributionMessage::Statement(r, s)
-					)),
+					),
 				)
 			) => {
 				assert!(!recipients.contains(&peer_b));
@@ -2111,13 +2079,13 @@ fn handle_multiple_seconded_statements() {
 		// `PeerB` sends a `Seconded` message: valid but known
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerMessage(
 						peer_b.clone(),
-						Versioned::V1(protocol_v1::StatementDistributionMessage::Statement(
+						protocol_v1::StatementDistributionMessage::Statement(
 							relay_parent_hash,
 							statement.clone().into(),
-						)),
+						),
 					),
 				),
 			})
@@ -2162,13 +2130,13 @@ fn handle_multiple_seconded_statements() {
 		// `PeerA` sends a `Valid` message
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerMessage(
 						peer_a.clone(),
-						Versioned::V1(protocol_v1::StatementDistributionMessage::Statement(
+						protocol_v1::StatementDistributionMessage::Statement(
 							relay_parent_hash,
 							statement.clone().into(),
-						)),
+						),
 					),
 				),
 			})
@@ -2199,9 +2167,9 @@ fn handle_multiple_seconded_statements() {
 			AllMessages::NetworkBridge(
 				NetworkBridgeMessage::SendValidationMessage(
 					recipients,
-					Versioned::V1(protocol_v1::ValidationProtocol::StatementDistribution(
+					protocol_v1::ValidationProtocol::StatementDistribution(
 						protocol_v1::StatementDistributionMessage::Statement(r, s)
-					)),
+					),
 				)
 			) => {
 				assert!(!recipients.contains(&peer_b));
@@ -2213,13 +2181,13 @@ fn handle_multiple_seconded_statements() {
 		// `PeerB` sends a `Valid` message
 		handle
 			.send(FromOverseer::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
+				msg: StatementDistributionMessage::NetworkBridgeUpdateV1(
 					NetworkBridgeEvent::PeerMessage(
 						peer_b.clone(),
-						Versioned::V1(protocol_v1::StatementDistributionMessage::Statement(
+						protocol_v1::StatementDistributionMessage::Statement(
 							relay_parent_hash,
 							statement.clone().into(),
-						)),
+						),
 					),
 				),
 			})

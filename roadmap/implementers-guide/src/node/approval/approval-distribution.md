@@ -39,7 +39,7 @@ Input:
   - `ApprovalDistributionMessage::NewBlocks`
   - `ApprovalDistributionMessage::DistributeAssignment`
   - `ApprovalDistributionMessage::DistributeApproval`
-  - `ApprovalDistributionMessage::NetworkBridgeUpdate`
+  - `ApprovalDistributionMessage::NetworkBridgeUpdateV1`
   - `OverseerSignal::BlockFinalized`
 
 Output:
